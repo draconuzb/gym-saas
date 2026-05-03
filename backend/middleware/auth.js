@@ -1,4 +1,5 @@
 const jwt = require('jsonwebtoken');
+const { query } = require('../db/db');
 
 const JWT_SECRET = process.env.JWT_SECRET;
 
@@ -11,9 +12,12 @@ if (!JWT_SECRET) {
 }
 
 const secret = JWT_SECRET || 'dev_insecure_secret_DO_NOT_USE_IN_PROD';
+const refreshSecret = process.env.JWT_REFRESH_SECRET || secret + '_refresh';
 
 /**
- * Middleware: Verify JWT token from Authorization header
+ * Verify JWT, attach { id, role, gym_id } to req.user.
+ * For super_admin, gym_id from JWT is null; req.gymId is resolved from
+ * X-Gym-Id header (the target gym they're operating on).
  */
 const authenticate = async (req, res, next) => {
   const authHeader = req.headers['authorization'];
@@ -25,18 +29,29 @@ const authenticate = async (req, res, next) => {
 
   try {
     const decoded = jwt.verify(token, secret);
-    req.user = decoded; // { id, role }
+    req.user = decoded;
 
-    // Verify the user still exists in the DB (handles deleted/blocked staff)
-    try {
-      const { query } = require('../db/db');
-      const userCheck = await query('SELECT id FROM users WHERE id = $1', [decoded.id]);
-      if (userCheck.rows.length === 0) {
-        return res.status(401).json({ success: false, message: 'User account no longer exists.' });
+    const userCheck = await query(
+      'SELECT id, gym_id, role FROM users WHERE id = $1',
+      [decoded.id]
+    );
+    if (userCheck.rows.length === 0) {
+      return res.status(401).json({ success: false, message: 'User account no longer exists.' });
+    }
+
+    const dbUser = userCheck.rows[0];
+    if (dbUser.role !== decoded.role || dbUser.gym_id !== decoded.gym_id) {
+      return res.status(401).json({ success: false, message: 'Session is stale, please re-login.' });
+    }
+
+    if (decoded.role === 'super_admin') {
+      const headerGymId = req.headers['x-gym-id'];
+      req.gymId = headerGymId ? parseInt(headerGymId, 10) : null;
+      if (req.gymId !== null && (!Number.isInteger(req.gymId) || req.gymId <= 0)) {
+        return res.status(400).json({ success: false, message: 'Invalid X-Gym-Id header.' });
       }
-    } catch (dbErr) {
-      console.error('[Auth] DB user check failed:', dbErr.message);
-      return res.status(503).json({ success: false, message: 'Service temporarily unavailable.' });
+    } else {
+      req.gymId = decoded.gym_id;
     }
 
     next();
@@ -46,8 +61,8 @@ const authenticate = async (req, res, next) => {
 };
 
 /**
- * Middleware: Restrict access to specific roles
- * @param {...string} roles - allowed roles e.g. 'admin', 'receptionist'
+ * Restrict access to specific roles.
+ *   router.delete('/foo', authenticate, authorize('admin', 'super_admin'), handler)
  */
 const authorize = (...roles) => (req, res, next) => {
   if (!roles.includes(req.user?.role)) {
@@ -60,31 +75,36 @@ const authorize = (...roles) => (req, res, next) => {
 };
 
 /**
- * Sign a short-lived access token (1 hour)
+ * For routes that require a tenant gym context. Run AFTER authenticate.
+ * Super-admins must set X-Gym-Id header to use these routes.
  */
-const signToken = (payload, expiresIn = '1h') => {
-  return jwt.sign(payload, secret, { expiresIn });
+const requireGym = (req, res, next) => {
+  if (!req.gymId) {
+    return res.status(400).json({
+      success: false,
+      message: req.user?.role === 'super_admin'
+        ? 'Super admin must specify X-Gym-Id header for tenant-scoped routes.'
+        : 'No gym context available.',
+    });
+  }
+  next();
 };
 
-/**
- * Sign a long-lived refresh token (7 days)
- */
-const signRefreshToken = (payload) => {
-  return jwt.sign(payload, process.env.JWT_REFRESH_SECRET || secret + '_refresh', { expiresIn: '7d' });
-};
+const signToken = (payload, expiresIn = '1h') =>
+  jwt.sign(payload, secret, { expiresIn });
 
-/**
- * Verify a refresh token
- */
-const verifyRefreshToken = (token) => {
-  return jwt.verify(token, process.env.JWT_REFRESH_SECRET || secret + '_refresh');
-};
+const signRefreshToken = (payload) =>
+  jwt.sign(payload, refreshSecret, { expiresIn: '7d' });
 
-/**
- * Verify a JWT token (used by endpoints that need manual verification)
- */
-const verifyToken = (token) => {
-  return jwt.verify(token, secret);
-};
+const verifyRefreshToken = (token) => jwt.verify(token, refreshSecret);
+const verifyToken = (token) => jwt.verify(token, secret);
 
-module.exports = { authenticate, authorize, signToken, signRefreshToken, verifyRefreshToken, verifyToken };
+module.exports = {
+  authenticate,
+  authorize,
+  requireGym,
+  signToken,
+  signRefreshToken,
+  verifyRefreshToken,
+  verifyToken,
+};
