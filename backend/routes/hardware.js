@@ -1,109 +1,96 @@
 const express = require('express');
-const crypto = require('crypto');
 const router = express.Router();
-const { query, getClient } = require('../db/db');
+const { query, withGym } = require('../db/db');
+const { safeCompare } = require('../lib/qr');
 
 /**
- * POST /api/hardware/turnstile/trigger
- * Handle RFID/NFC scan from Raspberry Pi / Arduino turnstile
- * Authenticated via HARDWARE_AUTH_SECRET
+ * POST /api/hardware/:gym_slug/turnstile/trigger
+ * RFID/NFC turnstile from Raspberry Pi / Arduino.
+ * Authenticated via the gym's hardware_secret in body or X-Hardware-Token.
+ *
+ * Body: { deviceId, rfidTag, token }
+ *   token may also be sent as X-Hardware-Token header.
  */
-router.post('/turnstile/trigger', async (req, res) => {
-  const { deviceId, rfidTag, token } = req.body;
+router.post('/:gym_slug/turnstile/trigger', async (req, res) => {
+  const { deviceId, rfidTag } = req.body;
+  const token = req.body?.token || req.headers['x-hardware-token'];
+  const slug = req.params.gym_slug;
 
   if (!deviceId || !token) {
     return res.status(400).json({ success: false, action: 'DENY', message: 'Missing deviceId or token.' });
   }
 
-  const expectedToken = process.env.HARDWARE_AUTH_SECRET || '';
-  if (!expectedToken || !token) {
+  // Resolve gym + verify hardware token
+  const gymRes = await query(
+    'SELECT id, hardware_secret FROM gyms WHERE slug = $1 AND is_active = true',
+    [slug]
+  );
+  if (gymRes.rows.length === 0) {
+    return res.status(404).json({ success: false, action: 'DENY', message: 'Gym not found.' });
+  }
+  const gym = gymRes.rows[0];
+  if (!safeCompare(token, gym.hardware_secret)) {
     return res.status(403).json({ success: false, action: 'DENY', message: 'Unauthorized hardware.' });
   }
-  try {
-    const a = Buffer.from(String(token), 'utf8');
-    const b = Buffer.from(expectedToken, 'utf8');
-    if (a.length !== b.length || !crypto.timingSafeEqual(a, b)) {
-      throw new Error('mismatch');
-    }
-  } catch {
-    return res.status(403).json({ success: false, action: 'DENY', message: 'Unauthorized hardware.' });
-  }
-
   if (!rfidTag) {
     return res.status(400).json({ success: false, action: 'DENY', message: 'No RFID tag provided.' });
   }
 
-  const client = await getClient();
   try {
-    // Look up member by RFID tag (future: add rfid_tag column to members)
-    // For now, check by telegram_id as a stand-in
-    const member = await client.query(
-      'SELECT id, first_name FROM members WHERE telegram_id = $1 AND is_active = true',
-      [rfidTag]
-    );
+    const result = await withGym(gym.id, async (db) => {
+      // RFID is matched against telegram_id (placeholder until rfid_tag column added)
+      const member = await db.query(
+        'SELECT id, first_name FROM members WHERE telegram_id = $1 AND is_active = true',
+        [rfidTag]
+      );
+      if (member.rows.length === 0) {
+        console.log(`[Hardware ${slug}] ${deviceId}: unknown tag ${rfidTag}`);
+        return { action: 'LOCK', color: 'RED_LED', reason: 'unknown_tag' };
+      }
+      const memberId = member.rows[0].id;
 
-    if (member.rows.length === 0) {
-      console.log(`[Hardware] ${deviceId}: unknown tag ${rfidTag}`);
-      // M2 fix: client.release is now only in the finally block
-      return res.json({ success: true, action: 'LOCK', color: 'RED_LED' });
-    }
-
-    const memberId = member.rows[0].id;
-
-    await client.query('BEGIN');
-
-    // Check active subscription with row lock (include dynamic tariff fields)
-    const sub = await client.query(
-      `SELECT id, total_days, days_used, visit_quota, allow_multi_entry_per_day, expires_at
-       FROM subscriptions
-       WHERE member_id = $1 AND status = 'active' AND (visit_quota IS NULL OR (total_days - days_used) > 0)
-       ORDER BY created_at DESC LIMIT 1 FOR UPDATE`,
-      [memberId]
-    );
-
-    if (sub.rows.length === 0) {
-      await client.query('COMMIT');
-      console.log(`[Hardware] ${deviceId}: expired sub for ${member.rows[0].first_name}`);
-      return res.json({ success: true, action: 'LOCK', color: 'RED_LED' });
-    }
-
-    const subRow = sub.rows[0];
-
-    // Calendar hard expiry check
-    if (subRow.expires_at && new Date(subRow.expires_at) < new Date()) {
-      await client.query('COMMIT');
-      console.log(`[Hardware] ${deviceId}: calendar expired for ${member.rows[0].first_name}`);
-      return res.json({ success: true, action: 'LOCK', color: 'RED_LED' });
-    }
-
-    // Deduction logic — aligned with QR attendance system
-    let shouldDeduct = subRow.visit_quota !== null;
-    if (shouldDeduct && subRow.allow_multi_entry_per_day) {
-      const todayCheck = await client.query(
-        `SELECT id FROM checkins WHERE member_id = $1 AND checked_in_at::date = CURRENT_DATE`,
+      const sub = await db.query(
+        `SELECT id, total_days, days_used, visit_quota, allow_multi_entry_per_day, expires_at
+         FROM subscriptions
+         WHERE member_id = $1 AND status = 'active'
+           AND (visit_quota IS NULL OR (total_days - days_used) > 0)
+         ORDER BY created_at DESC LIMIT 1 FOR UPDATE`,
         [memberId]
       );
-      if (todayCheck.rows.length > 0) shouldDeduct = false;
-    }
+      if (sub.rows.length === 0) {
+        console.log(`[Hardware ${slug}] ${deviceId}: expired sub for ${member.rows[0].first_name}`);
+        return { action: 'LOCK', color: 'RED_LED', reason: 'no_active_sub' };
+      }
+      const subRow = sub.rows[0];
 
-    if (shouldDeduct) {
-      await client.query('UPDATE subscriptions SET days_used = days_used + 1 WHERE id = $1', [subRow.id]);
-    }
-    await client.query(
-      'INSERT INTO checkins (member_id, subscription_id, approved_by_staff) VALUES ($1, $2, true)',
-      [memberId, subRow.id]
-    );
+      if (subRow.expires_at && new Date(subRow.expires_at) < new Date()) {
+        console.log(`[Hardware ${slug}] ${deviceId}: calendar expired for ${member.rows[0].first_name}`);
+        return { action: 'LOCK', color: 'RED_LED', reason: 'calendar_expired' };
+      }
 
-    await client.query('COMMIT');
-
-    console.log(`[Hardware] ${deviceId}: UNLOCK for ${member.rows[0].first_name}`);
-    res.json({ success: true, action: 'UNLOCK', color: 'GREEN_LED' });
+      let shouldDeduct = subRow.visit_quota !== null;
+      if (shouldDeduct && subRow.allow_multi_entry_per_day) {
+        const todayCheck = await db.query(
+          `SELECT id FROM checkins WHERE member_id = $1 AND checked_in_at::date = CURRENT_DATE`,
+          [memberId]
+        );
+        if (todayCheck.rows.length > 0) shouldDeduct = false;
+      }
+      if (shouldDeduct) {
+        await db.query('UPDATE subscriptions SET days_used = days_used + 1 WHERE id = $1', [subRow.id]);
+      }
+      await db.query(
+        `INSERT INTO checkins (gym_id, member_id, subscription_id, approved_by_staff)
+         VALUES (current_gym_id(), $1, $2, true)`,
+        [memberId, subRow.id]
+      );
+      console.log(`[Hardware ${slug}] ${deviceId}: UNLOCK for ${member.rows[0].first_name}`);
+      return { action: 'UNLOCK', color: 'GREEN_LED' };
+    });
+    res.json({ success: true, ...result });
   } catch (err) {
-    await client.query('ROLLBACK');
     console.error('[Hardware] Turnstile error:', err.message);
     res.status(500).json({ success: false, action: 'DENY', message: 'Server error.' });
-  } finally {
-    client.release();
   }
 });
 
