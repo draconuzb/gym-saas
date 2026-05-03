@@ -1,0 +1,15 @@
+node_modules/
+.env
+.env.local
+*.bak
+*.bak.*
+*.DELETED_*
+._*
+.DS_Store
+pgdata/
+backups/
+*.tar.gz
+.next/
+build/
+dist/
+*.log
