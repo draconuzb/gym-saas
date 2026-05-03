@@ -1,0 +1,601 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>Gym Pass - Mini App</title>
+    <script src="https://telegram.org/js/telegram-web-app.js"></script>
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;600;800&display=swap');
+
+        :root {
+            --bg-dark: #090a0f;
+            --card-glass: rgba(20, 22, 30, 0.7);
+            --accent-primary: #00f2fe;
+            --accent-secondary: #4facfe;
+            --text-main: #ffffff;
+            --text-muted: #8e95a5;
+        }
+
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+            font-family: 'Inter', sans-serif;
+        }
+
+        body {
+            background-color: var(--bg-dark);
+            color: var(--text-main);
+            min-height: 100vh;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            padding: 1.5rem;
+            position: relative;
+            overflow: hidden;
+        }
+
+        /* Ambient Glow effect */
+        .ambient-glow {
+            position: absolute;
+            width: 300px;
+            height: 300px;
+            background: radial-gradient(circle, rgba(0,242,254,0.3) 0%, rgba(0,0,0,0) 70%);
+            top: -10%;
+            left: -20%;
+            z-index: 0;
+            animation: pulse 4s infinite alternate;
+        }
+
+        .ambient-glow-2 {
+            position: absolute;
+            width: 300px;
+            height: 300px;
+            background: radial-gradient(circle, rgba(79,172,254,0.2) 0%, rgba(0,0,0,0) 70%);
+            bottom: -10%;
+            right: -20%;
+            z-index: 0;
+            animation: pulse 5s infinite alternate-reverse;
+        }
+
+        @keyframes pulse {
+            0% { transform: scale(1); opacity: 0.5; }
+            100% { transform: scale(1.2); opacity: 1; }
+        }
+
+        .pass-card {
+            background: var(--card-glass);
+            backdrop-filter: blur(20px);
+            -webkit-backdrop-filter: blur(20px);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            border-radius: 24px;
+            width: 100%;
+            max-width: 360px;
+            padding: 2rem;
+            text-align: center;
+            z-index: 10;
+            box-shadow: 0 20px 40px rgba(0,0,0,0.4), inset 0 1px 0 rgba(255,255,255,0.1);
+        }
+
+        .header h1 {
+            font-size: 1.5rem;
+            font-weight: 800;
+            margin-bottom: 0.5rem;
+            background: linear-gradient(135deg, var(--text-main), var(--text-muted));
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+        }
+
+        .status {
+            display: inline-block;
+            padding: 0.3rem 1rem;
+            border-radius: 20px;
+            font-size: 0.85rem;
+            font-weight: 600;
+            margin-bottom: 2rem;
+        }
+
+        .status-active {
+            background: rgba(0, 242, 254, 0.1);
+            color: var(--accent-primary);
+            border: 1px solid rgba(0, 242, 254, 0.2);
+            box-shadow: 0 0 15px rgba(0,242,254,0.2);
+        }
+
+        .status-expired {
+            background: rgba(255, 80, 80, 0.1);
+            color: #ff5050;
+            border: 1px solid rgba(255, 80, 80, 0.2);
+            box-shadow: 0 0 15px rgba(255,80,80,0.2);
+        }
+
+        .status-none {
+            background: rgba(142, 149, 165, 0.1);
+            color: var(--text-muted);
+            border: 1px solid rgba(142, 149, 165, 0.2);
+        }
+
+        .qr-container {
+            background: white;
+            padding: 1rem;
+            border-radius: 20px;
+            display: inline-block;
+            margin-bottom: 2rem;
+            position: relative;
+        }
+
+        /* QR Scanner Line animation */
+        .qr-container::after {
+            content: '';
+            position: absolute;
+            top: 1rem;
+            left: 1rem;
+            right: 1rem;
+            height: 2px;
+            background: var(--accent-primary);
+            box-shadow: 0 0 10px var(--accent-primary);
+            animation: scan 2s infinite linear;
+        }
+
+        @keyframes scan {
+            0% { top: 1rem; opacity: 0; }
+            10% { opacity: 1; }
+            90% { opacity: 1; }
+            100% { top: calc(100% - 1rem); opacity: 0; }
+        }
+
+        .qr-container img {
+            width: 180px;
+            height: 180px;
+            border-radius: 10px;
+            display: block;
+        }
+
+        .details {
+            display: flex;
+            justify-content: space-between;
+            text-align: left;
+            margin-bottom: 1.5rem;
+            padding-top: 1.5rem;
+            border-top: 1px solid rgba(255,255,255,0.05);
+        }
+
+        .detail-item p {
+            color: var(--text-muted);
+            font-size: 0.8rem;
+            margin-bottom: 0.3rem;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+        }
+
+        .detail-item h3 {
+            font-size: 1.1rem;
+            font-weight: 600;
+        }
+
+        .btn-action {
+            width: 100%;
+            padding: 1rem;
+            border-radius: 14px;
+            border: none;
+            background: linear-gradient(135deg, var(--accent-secondary), var(--accent-primary));
+            color: white;
+            font-size: 1rem;
+            font-weight: 600;
+            cursor: pointer;
+            transition: opacity 0.2s;
+            text-decoration: none;
+            display: block;
+        }
+
+        .btn-action:active {
+            opacity: 0.8;
+            transform: scale(0.98);
+        }
+
+        /* Loading state */
+        .loading-spinner {
+            width: 40px;
+            height: 40px;
+            border: 3px solid rgba(0, 242, 254, 0.2);
+            border-top-color: var(--accent-primary);
+            border-radius: 50%;
+            animation: spin 0.8s linear infinite;
+            margin: 2rem auto;
+        }
+
+        @keyframes spin {
+            to { transform: rotate(360deg); }
+        }
+
+        .loading-text {
+            color: var(--text-muted);
+            font-size: 0.9rem;
+            margin-top: 1rem;
+        }
+
+        .demo-banner {
+            background: rgba(255, 180, 0, 0.1);
+            border: 1px solid rgba(255, 180, 0, 0.3);
+            color: #ffb400;
+            font-size: 0.75rem;
+            font-weight: 600;
+            padding: 0.4rem 0.8rem;
+            border-radius: 10px;
+            margin-bottom: 1rem;
+            z-index: 10;
+        }
+
+        .error-text {
+            color: #ff5050;
+            font-size: 0.85rem;
+            margin: 1rem 0;
+        }
+
+        .retry-btn {
+            background: transparent;
+            border: 1px solid rgba(255, 255, 255, 0.15);
+            color: var(--text-muted);
+            padding: 0.5rem 1.5rem;
+            border-radius: 10px;
+            font-size: 0.85rem;
+            cursor: pointer;
+            margin-top: 0.5rem;
+        }
+
+        .no-pass-message {
+            color: var(--text-muted);
+            font-size: 0.9rem;
+            margin: 2rem 0;
+            line-height: 1.5;
+        }
+    </style>
+</head>
+<body>
+    <div class="ambient-glow"></div>
+    <div class="ambient-glow-2"></div>
+
+    <div id="demo-banner" class="demo-banner" style="display: none;">
+        <!-- filled by JS -->
+    </div>
+
+    <div class="pass-card" id="pass-card">
+        <!-- Loading state shown initially -->
+        <div id="state-loading">
+            <div class="loading-spinner"></div>
+            <p class="loading-text" id="el-loadingText">Loading your pass...</p>
+        </div>
+
+        <!-- Error state -->
+        <div id="state-error" style="display: none;">
+            <div class="header">
+                <h1 id="el-errorTitle">Gym Pass</h1>
+            </div>
+            <p class="error-text" id="error-message">Could not load member data.</p>
+            <button class="retry-btn" id="el-retryBtn" onclick="loadMemberData()">Try Again</button>
+        </div>
+
+        <!-- No membership state -->
+        <div id="state-no-pass" style="display: none;">
+            <div class="header">
+                <h1 id="no-pass-name">Gym Pass</h1>
+                <div class="status status-none" id="el-noActivePlan">No Active Plan</div>
+            </div>
+            <p class="no-pass-message" id="el-noPassMsg">You don't have an active membership yet.<br>Tap below to get started.</p>
+            <a href="/billing" class="btn-action" id="btn-buy">Buy Membership</a>
+        </div>
+
+        <!-- Active membership state -->
+        <div id="state-active" style="display: none;">
+            <div class="header">
+                <h1 id="member-name">-</h1>
+                <div class="status" id="member-status">-</div>
+            </div>
+
+            <div class="qr-container">
+                <img id="qr-image" src="" alt="QR Code" />
+                <p id="el-showAtEntrance" style="font-size: 0.7rem; color: #000; margin-top: 0.5rem; font-weight: 800;">SHOW AT ENTRANCE</p>
+            </div>
+
+            <div class="details">
+                <div class="detail-item">
+                    <p id="el-planLabel">Plan</p>
+                    <h3 id="member-plan">-</h3>
+                </div>
+                <div class="detail-item" style="text-align: right;">
+                    <p id="expiry-label">Expires</p>
+                    <h3 id="member-expiry">-</h3>
+                </div>
+            </div>
+
+            <a href="/billing" class="btn-action" id="btn-billing">Payme Billing</a>
+        </div>
+    </div>
+
+    <script>
+        // ── Translations ────────────────────────────────
+        const webappLang = {
+          uz: {
+            loadingPass: 'Passingiz yuklanmoqda...',
+            gymPass: 'Gym Pass',
+            errorLoad: 'A\'zo ma\'lumotlarini yuklab bo\'lmadi.',
+            tryAgain: 'Qayta urinish',
+            noActivePlan: 'Faol reja yo\'q',
+            noPassMsg: 'Sizda hali faol a\'zolik yo\'q.<br>Boshlash uchun pastga bosing.',
+            buyMembership: 'A\'zolik sotib olish',
+            showAtEntrance: 'KIRISHDA KO\'RSATING',
+            planLabel: 'Reja',
+            expiresLabel: 'Tugaydi',
+            remainingLabel: 'Qolgan',
+            billing: 'Payme To\'lov',
+            demoMode: 'Demo rejim — haqiqiy ma\'lumotlar uchun Telegramda oching',
+            premiumActive: 'Premium Faol',
+            expired: 'Muddati tugagan',
+            membershipActive: 'A\'zolik Faol',
+            days: 'kun',
+            passTitle: 'ning Passi',
+            serverError: 'Server xatosi: ',
+            memberDefault: 'A\'zo',
+          },
+          ru: {
+            loadingPass: 'Загрузка пропуска...',
+            gymPass: 'Gym Pass',
+            errorLoad: 'Не удалось загрузить данные участника.',
+            tryAgain: 'Повторить',
+            noActivePlan: 'Нет активного плана',
+            noPassMsg: 'У вас пока нет активного членства.<br>Нажмите ниже, чтобы начать.',
+            buyMembership: 'Купить членство',
+            showAtEntrance: 'ПОКАЖИТЕ НА ВХОДЕ',
+            planLabel: 'План',
+            expiresLabel: 'Истекает',
+            remainingLabel: 'Осталось',
+            billing: 'Оплата Payme',
+            demoMode: 'Демо-режим — откройте в Telegram для реальных данных',
+            premiumActive: 'Премиум Активен',
+            expired: 'Истёк',
+            membershipActive: 'Членство Активно',
+            days: 'дней',
+            passTitle: ' — Пропуск',
+            serverError: 'Ошибка сервера: ',
+            memberDefault: 'Участник',
+          },
+          kk: {
+            loadingPass: 'Рұқсатнамаңыз жүктелуде...',
+            gymPass: 'Gym Pass',
+            errorLoad: 'Мүше деректерін жүктеу мүмкін болмады.',
+            tryAgain: 'Қайта көру',
+            noActivePlan: 'Белсенді жоспар жоқ',
+            noPassMsg: 'Сізде әлі белсенді мүшелік жоқ.<br>Бастау үшін төменге басыңыз.',
+            buyMembership: 'Мүшелік сатып алу',
+            showAtEntrance: 'КІРЕБЕРІСТЕ КӨРСЕТІҢІЗ',
+            planLabel: 'Жоспар',
+            expiresLabel: 'Аяқталады',
+            remainingLabel: 'Қалды',
+            billing: 'Payme Төлем',
+            demoMode: 'Демо режим — нақты деректер үшін Telegram-да ашыңыз',
+            premiumActive: 'Премиум Белсенді',
+            expired: 'Мерзімі өтті',
+            membershipActive: 'Мүшелік Белсенді',
+            days: 'күн',
+            passTitle: ' — Рұқсатнама',
+            serverError: 'Сервер қатесі: ',
+            memberDefault: 'Мүше',
+          },
+          en: {
+            loadingPass: 'Loading your pass...',
+            gymPass: 'Gym Pass',
+            errorLoad: 'Could not load member data.',
+            tryAgain: 'Try Again',
+            noActivePlan: 'No Active Plan',
+            noPassMsg: 'You don\'t have an active membership yet.<br>Tap below to get started.',
+            buyMembership: 'Buy Membership',
+            showAtEntrance: 'SHOW AT ENTRANCE',
+            planLabel: 'Plan',
+            expiresLabel: 'Expires',
+            remainingLabel: 'Remaining',
+            billing: 'Payme Billing',
+            demoMode: 'Demo Mode - Open in Telegram for real data',
+            premiumActive: 'Premium Active',
+            expired: 'Expired',
+            membershipActive: 'Membership Active',
+            days: 'days',
+            passTitle: '\'s Pass',
+            serverError: 'Server error: ',
+            memberDefault: 'Member',
+          },
+        };
+
+        // Detect language: URL param > Telegram language_code > default 'uz'
+        function detectLang() {
+          // 1. Check URL param ?lang=xx
+          const urlParams = new URLSearchParams(window.location.search);
+          const urlLang = urlParams.get('lang');
+          if (urlLang && webappLang[urlLang]) return urlLang;
+
+          // 2. Check Telegram user language_code
+          try {
+            const tg = window.Telegram && window.Telegram.WebApp;
+            const user = tg && tg.initDataUnsafe && tg.initDataUnsafe.user;
+            if (user && user.language_code) {
+              const code = user.language_code.toLowerCase().substring(0, 2);
+              if (webappLang[code]) return code;
+            }
+          } catch (e) {}
+
+          // 3. Default
+          return 'uz';
+        }
+
+        let currentLang = detectLang();
+
+        function t(key) {
+          return (webappLang[currentLang] && webappLang[currentLang][key]) || webappLang['en'][key] || key;
+        }
+
+        function applyStaticTranslations() {
+          document.getElementById('el-loadingText').textContent = t('loadingPass');
+          document.getElementById('el-errorTitle').textContent = t('gymPass');
+          document.getElementById('el-retryBtn').textContent = t('tryAgain');
+          document.getElementById('el-noActivePlan').textContent = t('noActivePlan');
+          document.getElementById('el-noPassMsg').innerHTML = t('noPassMsg');
+          document.getElementById('btn-buy').textContent = t('buyMembership');
+          document.getElementById('el-showAtEntrance').textContent = t('showAtEntrance');
+          document.getElementById('el-planLabel').textContent = t('planLabel');
+          document.getElementById('btn-billing').textContent = t('billing');
+        }
+
+        // --- State ---
+        let isDemo = false;
+        let telegramUser = null;
+
+        // --- Init ---
+        document.addEventListener('DOMContentLoaded', function () {
+            // Apply translations first
+            applyStaticTranslations();
+
+            // Try to get Telegram WebApp user
+            try {
+                const tg = window.Telegram && window.Telegram.WebApp;
+                if (tg) {
+                    tg.ready();
+                    tg.expand();
+                }
+
+                const user = tg && tg.initDataUnsafe && tg.initDataUnsafe.user;
+                if (user && user.id) {
+                    telegramUser = user;
+                } else {
+                    isDemo = true;
+                }
+            } catch (e) {
+                isDemo = true;
+            }
+
+            if (isDemo) {
+                document.getElementById('demo-banner').style.display = 'block';
+                document.getElementById('demo-banner').textContent = t('demoMode');
+                showDemoData();
+            } else {
+                loadMemberData();
+            }
+        });
+
+        // --- Fetch real member data ---
+        async function loadMemberData() {
+            showState('loading');
+
+            const telegramId = telegramUser.id;
+
+            // C1 fix: Send Telegram WebApp initData for server-side validation
+            const tg = window.Telegram && window.Telegram.WebApp;
+            const initData = tg && tg.initData;
+            const headers = {};
+            if (initData) {
+                headers['X-Telegram-Init-Data'] = initData;
+            }
+
+            try {
+                const res = await fetch('/api/members/telegram/' + telegramId, { headers });
+
+                if (res.status === 404) {
+                    const name = buildName(telegramUser);
+                    document.getElementById('no-pass-name').textContent = name + t('passTitle');
+                    showState('no-pass');
+                    return;
+                }
+
+                if (!res.ok) {
+                    throw new Error(t('serverError') + res.status);
+                }
+
+                const data = await res.json();
+                renderMember(data);
+                showState('active');
+            } catch (err) {
+                console.error('Failed to load member data:', err);
+                document.getElementById('error-message').textContent = err.message || t('errorLoad');
+                showState('error');
+            }
+        }
+
+        // --- Render member info ---
+        function renderMember(resp) {
+            const data = resp.data;
+
+            // Name
+            const displayName = data.first_name || buildName(telegramUser);
+            document.getElementById('member-name').textContent = displayName + t('passTitle');
+
+            // Status badge
+            const statusEl = document.getElementById('member-status');
+            const isActive = data.is_active && data.daysLeft > 0;
+            const planName = data.subscription?.plan_name;
+            if (isActive) {
+                statusEl.textContent = (planName || t('membershipActive').replace(/ .*/, '')) + ' ' + t('membershipActive').split(' ').pop();
+                statusEl.className = 'status status-active';
+            } else {
+                statusEl.textContent = t('expired');
+                statusEl.className = 'status status-expired';
+            }
+
+            // Plan
+            document.getElementById('member-plan').textContent = planName || 'Standard';
+
+            // Expiry / Days remaining
+            if (data.daysLeft != null) {
+                document.getElementById('member-expiry').textContent = data.daysLeft + ' ' + t('days');
+                document.getElementById('expiry-label').textContent = t('remainingLabel');
+            } else {
+                document.getElementById('member-expiry').textContent = '-';
+                document.getElementById('expiry-label').textContent = t('expiresLabel');
+            }
+
+            // QR Code
+            const qrToken = data.qrToken || telegramUser.id;
+            const qrUrl = 'https://api.qrserver.com/v1/create-qr-code/?size=180x180&data=' + encodeURIComponent(String(qrToken));
+            document.getElementById('qr-image').src = qrUrl;
+        }
+
+        // --- Demo mode with placeholder data ---
+        function showDemoData() {
+            document.getElementById('member-name').textContent = "Demo User" + t('passTitle');
+
+            const statusEl = document.getElementById('member-status');
+            statusEl.textContent = t('premiumActive');
+            statusEl.className = 'status status-active';
+
+            document.getElementById('member-plan').textContent = 'Unlimited';
+            document.getElementById('member-expiry').textContent = 'May 15, 2026';
+            document.getElementById('expiry-label').textContent = t('expiresLabel');
+
+            const qrUrl = 'https://api.qrserver.com/v1/create-qr-code/?size=180x180&data=DEMO-PASS-000';
+            document.getElementById('qr-image').src = qrUrl;
+
+            showState('active');
+        }
+
+        // --- Helpers ---
+        function showState(state) {
+            document.getElementById('state-loading').style.display = state === 'loading' ? '' : 'none';
+            document.getElementById('state-error').style.display = state === 'error' ? '' : 'none';
+            document.getElementById('state-no-pass').style.display = state === 'no-pass' ? '' : 'none';
+            document.getElementById('state-active').style.display = state === 'active' ? '' : 'none';
+        }
+
+        function buildName(user) {
+            if (!user) return t('memberDefault');
+            const parts = [];
+            if (user.first_name) parts.push(user.first_name);
+            if (user.last_name) parts.push(user.last_name);
+            return parts.length ? parts.join(' ') : (user.username || t('memberDefault'));
+        }
+
+        function formatDate(date) {
+            const months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+            return months[date.getMonth()] + ' ' + date.getDate() + ', ' + date.getFullYear();
+        }
+    </script>
+</body>
+</html>

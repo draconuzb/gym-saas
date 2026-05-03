@@ -1,0 +1,23 @@
+{
+  "name": "gym-system-frontend",
+  "version": "1.0.0",
+  "private": true,
+  "scripts": {
+    "dev": "next dev",
+    "build": "next build",
+    "start": "next start"
+  },
+  "dependencies": {
+    "autoprefixer": "^10.4.27",
+    "next": "^14.2.35",
+    "postcss": "^8.5.9",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1"
+  },
+  "devDependencies": {
+    "@types/node": "^20",
+    "@types/react": "18.3.28",
+    "@types/react-dom": "^18.3.7",
+    "typescript": "5.9.3"
+  }
+}

@@ -1,0 +1,345 @@
+<!DOCTYPE html>
+<html lang="uz">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+  <title>GymSystem — Kirish Kioski</title>
+  <style>
+    @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;700;900&display=swap');
+    * { margin: 0; padding: 0; box-sizing: border-box; font-family: 'Inter', sans-serif; }
+    body {
+      background: #080a10; color: white; min-height: 100vh;
+      display: flex; flex-direction: column; align-items: center; justify-content: center;
+      gap: 1.5rem; padding: 2rem; overflow: hidden;
+    }
+    .orb { position: fixed; border-radius: 50%; filter: blur(80px); pointer-events: none; z-index: 0; }
+    .orb-1 { width: 400px; height: 400px; background: rgba(0,242,254,0.06); top: -100px; left: -100px; }
+    .orb-2 { width: 350px; height: 350px; background: rgba(79,172,254,0.05); bottom: -80px; right: -80px; }
+    .brand { font-size: 1.8rem; font-weight: 900; background: linear-gradient(135deg, #4facfe, #00f2fe); -webkit-background-clip: text; -webkit-text-fill-color: transparent; z-index: 1; }
+    .time { font-size: 3rem; font-weight: 900; letter-spacing: -2px; color: rgba(255,255,255,0.15); z-index: 1; }
+
+    /* Code input area */
+    .code-section { z-index: 1; text-align: center; }
+    .code-display {
+      font-size: 3rem; font-weight: 900; letter-spacing: 1rem;
+      background: rgba(255,255,255,0.05); border: 2px solid rgba(0,242,254,0.3);
+      border-radius: 20px; padding: 1rem 2rem; min-width: 280px;
+      margin: 1rem 0; color: #00f2fe; min-height: 70px;
+      display: flex; align-items: center; justify-content: center;
+    }
+    .code-display.error { border-color: rgba(255,80,80,0.5); color: #ff5050; }
+    .instruction h2 { font-size: 1.3rem; font-weight: 700; margin-bottom: 0.4rem; }
+    .instruction p { color: #8e95a5; font-size: 0.9rem; }
+
+    /* Number pad */
+    .numpad {
+      display: grid; grid-template-columns: repeat(3, 1fr); gap: 0.75rem;
+      max-width: 320px; z-index: 1;
+    }
+    .numpad button {
+      font-size: 1.8rem; font-weight: 800; padding: 1rem;
+      border-radius: 16px; border: 1px solid rgba(255,255,255,0.1);
+      background: rgba(255,255,255,0.05); color: white; cursor: pointer;
+      transition: all 0.15s;
+    }
+    .numpad button:active { transform: scale(0.95); background: rgba(0,242,254,0.15); }
+    .numpad .btn-clear { background: rgba(255,80,80,0.1); color: #ff5050; border-color: rgba(255,80,80,0.2); font-size: 1.2rem; }
+    .numpad .btn-enter { background: linear-gradient(135deg, #4facfe, #00f2fe); color: #000; font-size: 1.2rem; }
+
+    /* Result overlay */
+    .result-card {
+      position: fixed; inset: 0; display: none; flex-direction: column;
+      align-items: center; justify-content: center; z-index: 100;
+      backdrop-filter: blur(20px); -webkit-backdrop-filter: blur(20px);
+      animation: fadeIn 0.3s ease;
+    }
+    @keyframes fadeIn { from { opacity: 0; transform: scale(0.95); } to { opacity: 1; transform: scale(1); } }
+    .result-card.granted { background: rgba(0, 20, 20, 0.95); }
+    .result-card.denied { background: rgba(20, 0, 0, 0.95); }
+    .result-card.pending { background: rgba(20, 20, 0, 0.95); }
+    .result-inner {
+      text-align: center; padding: 3rem; border-radius: 28px;
+      max-width: 420px; width: 90%; border: 1px solid rgba(255,255,255,0.08);
+    }
+    .result-card.granted .result-inner { box-shadow: 0 0 80px rgba(0,242,254,0.2); border-color: rgba(0,242,254,0.3); }
+    .result-card.denied .result-inner { box-shadow: 0 0 80px rgba(255,80,80,0.2); border-color: rgba(255,80,80,0.3); }
+    .result-card.pending .result-inner { box-shadow: 0 0 80px rgba(255,200,0,0.2); border-color: rgba(255,200,0,0.3); }
+    .result-icon { font-size: 5rem; margin-bottom: 1.2rem; }
+    .result-status { font-size: 1.6rem; font-weight: 900; margin-bottom: 0.5rem; }
+    .result-name { font-size: 1.2rem; font-weight: 700; margin-bottom: 0.3rem; }
+    .result-detail { color: #8e95a5; font-size: 0.9rem; }
+    .result-card.granted .result-status { color: #00f2fe; }
+    .result-card.denied .result-status { color: #ff5050; }
+
+    /* Language flags */
+    .lang-flags {
+      position: fixed; top: 1rem; right: 1rem; display: flex; gap: 0.3rem; z-index: 50;
+    }
+    .lang-flags button {
+      padding: 0.3rem 0.5rem; border-radius: 8px; border: 1px solid transparent;
+      background: transparent; cursor: pointer; font-size: 1rem; transition: all 0.2s;
+    }
+    .lang-flags button.active { border-color: rgba(0,242,254,0.5); background: rgba(0,242,254,0.1); }
+
+    .status-dot {
+      display: inline-flex; align-items: center; gap: 6px;
+      background: rgba(0,242,254,0.08); border: 1px solid rgba(0,242,254,0.2);
+      border-radius: 20px; padding: 0.3rem 0.9rem; font-size: 0.78rem; color: #00f2fe; z-index: 1;
+    }
+    .dot { width: 7px; height: 7px; border-radius: 50%; background: #00f2fe; animation: blink 1.4s infinite; }
+    @keyframes blink { 0%,100%{opacity:1} 50%{opacity:0.2} }
+
+    .setup-overlay {
+      position: fixed; inset: 0; z-index: 200;
+      background: rgba(8,10,16,0.97);
+      display: flex; align-items: center; justify-content: center;
+    }
+    .setup-card {
+      background: rgba(255,255,255,0.04); border: 1px solid rgba(0,242,254,0.2);
+      border-radius: 24px; padding: 2.5rem; max-width: 380px; width: 90%; text-align: center;
+    }
+    .setup-card h2 { font-size: 1.4rem; font-weight: 800; margin-bottom: 0.5rem; }
+    .setup-card p { color: #8e95a5; font-size: 0.85rem; margin-bottom: 1.5rem; }
+    .setup-card input {
+      width: 100%; padding: 0.9rem 1rem; border-radius: 12px;
+      border: 1px solid rgba(0,242,254,0.3); background: rgba(255,255,255,0.06);
+      color: white; font-size: 1rem; margin-bottom: 1rem; outline: none;
+    }
+    .setup-card input:focus { border-color: #00f2fe; }
+    .setup-card button {
+      width: 100%; padding: 0.9rem; border: none; border-radius: 12px;
+      background: linear-gradient(135deg, #4facfe, #00f2fe); color: #000;
+      font-weight: 800; font-size: 1rem; cursor: pointer;
+    }
+    .setup-card .error-msg { color: #ff5050; font-size: 0.8rem; margin-top: 0.5rem; display: none; }
+  </style>
+</head>
+<body>
+  <div class="orb orb-1"></div>
+  <div class="orb orb-2"></div>
+
+  <div class="lang-flags" id="langFlags"></div>
+
+  <div class="brand">GymSystem</div>
+  <div class="time" id="clock">00:00:00</div>
+
+  <div class="code-section">
+    <div class="instruction">
+      <h2 id="el-title">Kirish kodini kiriting</h2>
+      <p id="el-subtitle">Botdan olgan 6 raqamli kodni kiriting</p>
+    </div>
+    <div class="code-display" id="codeDisplay">_ _ _ _ _ _</div>
+  </div>
+
+  <div class="numpad" id="numpad">
+    <button onclick="pressKey('1')">1</button>
+    <button onclick="pressKey('2')">2</button>
+    <button onclick="pressKey('3')">3</button>
+    <button onclick="pressKey('4')">4</button>
+    <button onclick="pressKey('5')">5</button>
+    <button onclick="pressKey('6')">6</button>
+    <button onclick="pressKey('7')">7</button>
+    <button onclick="pressKey('8')">8</button>
+    <button onclick="pressKey('9')">9</button>
+    <button class="btn-clear" onclick="clearCode()" id="el-clear">Tozalash</button>
+    <button onclick="pressKey('0')">0</button>
+    <button class="btn-enter" onclick="submitCode()" id="el-enter">Kirish</button>
+  </div>
+
+  <div class="status-dot"><div class="dot"></div><span id="el-status">Kod kutilmoqda...</span></div>
+
+  <!-- Setup modal -->
+  <div class="setup-overlay" id="setupOverlay" style="display: none;">
+    <div class="setup-card">
+      <h2>🔐 Kiosk Setup</h2>
+      <p>Enter the kiosk authentication token to activate this terminal.</p>
+      <input type="password" id="setupTokenInput" placeholder="Authentication token" autocomplete="off" />
+      <button onclick="saveKioskToken()">Activate Kiosk</button>
+      <div class="error-msg" id="setupError">Token is required</div>
+    </div>
+  </div>
+
+  <!-- Result overlay -->
+  <div class="result-card" id="resultCard">
+    <div class="result-inner">
+      <div class="result-icon" id="rIcon"></div>
+      <div class="result-status" id="rStatus"></div>
+      <div class="result-name" id="rName"></div>
+      <div class="result-detail" id="rDetail"></div>
+      <div id="approvalActions" style="display: none; margin-top: 25px; gap: 10px; flex-direction: column;">
+        <button id="el-approveBtn" onclick="approveCheckin()" style="background:linear-gradient(to right, #00f2fe, #4facfe); color:black; padding:15px; border-radius:12px; font-weight:800; border:none; cursor:pointer; font-size:1rem;"></button>
+        <button onclick="cancelCheckin()" style="background:rgba(255,255,255,0.1); color:white; padding:15px; border-radius:12px; font-weight:700; border:none; cursor:pointer; font-size:1rem;" id="el-cancelBtn"></button>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    // ── Translations ──
+    const L = {
+      uz: { title:'Kirish kodini kiriting', subtitle:'Botdan olgan 6 raqamli kodni kiriting', clear:'Tozalash', enter:'Kirish', waiting:'Kod kutilmoqda...', checking:'Tekshirilmoqda...', granted:'KIRISH RUXSAT ETILDI!', denied:'KIRISH RAD!', pendingTitle:'A\'ZO ANIQLANDI', pendingDesc:'Ushbu mijoz kirmoqchi. Tasdiqlaysizmi?', approveBtn:'✅ RUXSAT BERISH', cancelBtn:'❌ BEKOR QILISH', daysLeft:'mashg\'ulot kuni qoldi', expired:'Abonement tugagan.', alreadyIn:'Bugun allaqachon kirgan', loading:'Yuklanmoqda...', invalid:'Noto\'g\'ri kod', },
+      ru: { title:'Введите код входа', subtitle:'Введите 6-значный код из бота', clear:'Очистить', enter:'Войти', waiting:'Ожидание кода...', checking:'Проверка...', granted:'ВХОД РАЗРЕШЁН!', denied:'ВХОД ЗАПРЕЩЁН!', pendingTitle:'УЧАСТНИК НАЙДЕН', pendingDesc:'Этот клиент хочет войти. Подтвердить?', approveBtn:'✅ РАЗРЕШИТЬ', cancelBtn:'❌ ОТМЕНИТЬ', daysLeft:'дней осталось', expired:'Абонемент истёк.', alreadyIn:'Уже входил сегодня', loading:'Загрузка...', invalid:'Неверный код', },
+      kk: { title:'Кіру кодын еңгізіңіз', subtitle:'Боттан алған 6 санды кодты еңгізіңіз', clear:'Тазалау', enter:'Кіру', waiting:'Код күтілуде...', checking:'Тексерілуде...', granted:'КІРУГЕ РҰҚСАТ!', denied:'КІРУГЕ ТЫЙЫМ!', pendingTitle:'МҮШЕ ТАБЫЛДЫ', pendingDesc:'Бұл клиент кіргісі келеді. Растайсыз ба?', approveBtn:'✅ РҰҚСАТ БЕРУ', cancelBtn:'❌ БОЛДЫРМАУ', daysLeft:'күн қалды', expired:'Абонемент мерзімі біткен.', alreadyIn:'Бүгін кірген', loading:'Жүктелуде...', invalid:'Қате код', },
+      en: { title:'Enter entry code', subtitle:'Enter the 6-digit code from the bot', clear:'Clear', enter:'Enter', waiting:'Waiting for code...', checking:'Checking...', granted:'ACCESS GRANTED!', denied:'ACCESS DENIED!', pendingTitle:'MEMBER FOUND', pendingDesc:'This member wants to enter. Approve?', approveBtn:'✅ APPROVE ENTRY', cancelBtn:'❌ CANCEL', daysLeft:'days remaining', expired:'Subscription expired.', alreadyIn:'Already entered today', loading:'Loading...', invalid:'Invalid code', },
+    };
+    let lang = localStorage.getItem('kioskLang') || 'uz';
+    function t(k) { return L[lang]?.[k] || L.uz[k] || k; }
+
+    function setLang(l) {
+      lang = l; localStorage.setItem('kioskLang', l);
+      document.getElementById('el-title').textContent = t('title');
+      document.getElementById('el-subtitle').textContent = t('subtitle');
+      document.getElementById('el-clear').textContent = t('clear');
+      document.getElementById('el-enter').textContent = t('enter');
+      document.getElementById('el-status').textContent = t('waiting');
+      document.getElementById('el-approveBtn').textContent = t('approveBtn');
+      document.getElementById('el-cancelBtn').textContent = t('cancelBtn');
+      renderFlags();
+    }
+
+    function renderFlags() {
+      const c = document.getElementById('langFlags');
+      c.innerHTML = ['uz','ru','kk','en'].map(l =>
+        `<button class="${l===lang?'active':''}" onclick="setLang('${l}')">${{uz:'🇺🇿',ru:'🇷🇺',kk:'🇰🇿',en:'🇬🇧'}[l]}</button>`
+      ).join('');
+    }
+
+    // ── Clock ──
+    function tick() { document.getElementById('clock').textContent = new Date().toLocaleTimeString('uz-UZ', { timeZone: 'Asia/Tashkent' }); }
+    setInterval(tick, 1000); tick();
+
+    // ── Code input ──
+    let code = '';
+    let KIOSK_TOKEN = localStorage.getItem('kioskToken');
+    if (!KIOSK_TOKEN) {
+      document.getElementById('setupOverlay').style.display = 'flex';
+      document.getElementById('setupTokenInput').focus();
+    }
+
+    function saveKioskToken() {
+      const input = document.getElementById('setupTokenInput');
+      const token = input.value.trim();
+      if (!token) {
+        document.getElementById('setupError').style.display = 'block';
+        return;
+      }
+      localStorage.setItem('kioskToken', token);
+      KIOSK_TOKEN = token;
+      document.getElementById('setupOverlay').style.display = 'none';
+    }
+
+    document.getElementById('setupTokenInput').addEventListener('keydown', function(e) {
+      if (e.key === 'Enter') saveKioskToken();
+    });
+    let currentPendingData = null;
+
+    function updateDisplay() {
+      const display = document.getElementById('codeDisplay');
+      if (code.length === 0) {
+        display.textContent = '_ _ _ _ _ _';
+        display.classList.remove('error');
+      } else {
+        display.textContent = code.split('').join(' ') + ' _'.repeat(6 - code.length);
+      }
+    }
+
+    function pressKey(n) {
+      if (code.length >= 6) return;
+      code += n;
+      updateDisplay();
+      if (code.length === 6) submitCode();
+    }
+
+    function clearCode() {
+      code = '';
+      updateDisplay();
+      document.getElementById('codeDisplay').classList.remove('error');
+      document.getElementById('el-status').textContent = t('waiting');
+    }
+
+    async function submitCode() {
+      if (code.length !== 6) return;
+      document.getElementById('el-status').textContent = t('checking');
+
+      try {
+        const resp = await fetch('/api/verify-code', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ code, kioskToken: KIOSK_TOKEN })
+        });
+        const data = await resp.json();
+        if (data.success !== undefined) {
+          showResult(data);
+        }
+      } catch (err) {
+        document.getElementById('codeDisplay').classList.add('error');
+        document.getElementById('el-status').textContent = t('invalid');
+      }
+
+      setTimeout(() => { code = ''; updateDisplay(); }, 3000);
+    }
+
+    // ── Result display ──
+    let resultTimeout;
+
+    function showResult(data) {
+      clearTimeout(resultTimeout);
+      const card = document.getElementById('resultCard');
+      const actionDiv = document.getElementById('approvalActions');
+
+      if (data.pending) {
+        card.className = 'result-card pending';
+        card.style.display = 'flex';
+        document.getElementById('rIcon').textContent = '⏳';
+        document.getElementById('rStatus').textContent = t('pendingTitle');
+        document.getElementById('rName').textContent = data.name + (data.plan ? ' · ' + data.plan : '');
+        document.getElementById('rDetail').textContent = t('pendingDesc') + ' (' + data.days_left + ' ' + t('daysLeft') + ')';
+        actionDiv.style.display = 'flex';
+        currentPendingData = data;
+        return;
+      }
+
+      actionDiv.style.display = 'none';
+      card.className = 'result-card ' + (data.granted ? 'granted' : 'denied');
+      card.style.display = 'flex';
+      document.getElementById('rIcon').textContent = data.granted ? '✅' : '🚫';
+      document.getElementById('rStatus').textContent = data.granted ? t('granted') : t('denied');
+      document.getElementById('rName').textContent = data.name + (data.plan ? ' · ' + data.plan : '');
+      document.getElementById('rDetail').textContent = data.granted
+        ? data.days_left + ' ' + t('daysLeft')
+        : (data.message || t('expired'));
+
+      resultTimeout = setTimeout(() => { card.style.display = 'none'; }, 5000);
+    }
+
+    async function approveCheckin() {
+      if (!currentPendingData) return;
+      document.getElementById('approvalActions').style.display = 'none';
+      document.getElementById('rStatus').textContent = t('loading');
+      try {
+        const resp = await fetch('/api/approve-checkin', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            memberId: currentPendingData.memberId,
+            subscriptionId: currentPendingData.subscriptionId,
+            kioskToken: KIOSK_TOKEN
+          })
+        });
+        const data = await resp.json();
+        showResult(data);
+      } catch (err) {
+        cancelCheckin();
+      }
+    }
+
+    function cancelCheckin() {
+      document.getElementById('resultCard').style.display = 'none';
+      currentPendingData = null;
+    }
+
+    // ── Init ──
+    renderFlags();
+    setLang(lang);
+  </script>
+</body>
+</html>

@@ -1,0 +1,52 @@
+services:
+  db:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: gym_admin
+      POSTGRES_PASSWORD: ${DB_PASSWORD:?DB_PASSWORD must be set}
+      POSTGRES_DB: gym_system
+    # L5 fix: Only expose PostgreSQL on internal Docker network, not to host
+    expose:
+      - "5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./backend/db/schema.sql:/docker-entrypoint-initdb.d/01-schema.sql
+      - ./backend/db/seed.sql:/docker-entrypoint-initdb.d/02-seed.sql
+
+  api:
+    build: ./backend
+    restart: unless-stopped
+    depends_on:
+      - db
+    ports:
+      - "${PORT:-5000}:5000"
+    environment:
+      NODE_ENV: production
+      PORT: 5000
+      DB_HOST: db
+      DB_PORT: 5432
+      DB_USER: gym_admin
+      DB_PASSWORD: ${DB_PASSWORD:?DB_PASSWORD must be set}
+      DB_NAME: gym_system
+      JWT_SECRET: ${JWT_SECRET}
+      QR_HMAC_SECRET: ${QR_HMAC_SECRET}
+      TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN}
+      BOT_ADMIN_IDS: ${BOT_ADMIN_IDS}
+      HARDWARE_AUTH_SECRET: ${HARDWARE_AUTH_SECRET}
+    volumes:
+      - ./kiosk.html:/app/kiosk.html
+      - ./telegram-webapp.html:/app/telegram-webapp.html
+
+  frontend:
+    build: ./frontend
+    restart: unless-stopped
+    depends_on:
+      - api
+    ports:
+      - "3000:3000"
+    environment:
+      NEXT_PUBLIC_API_URL: ""
+
+volumes:
+  pgdata:
