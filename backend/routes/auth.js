@@ -61,10 +61,13 @@ router.post('/login', loginRateLimit, async (req, res) => {
         return res.status(401).json({ success: false, message: 'Invalid credentials.' });
       }
       const gym = gymRes.rows[0];
+      // Exclude super_admin (gym_id IS NULL) — they sign in via the
+      // gym-less path. Without this, a super_admin with the same phone
+      // as a tenant user would be returned by the RLS-permissive policy.
       const userRes = await withGym(gym.id, async (db) =>
         db.query(
           `SELECT id, phone, role, password_hash, first_name, gym_id
-           FROM users WHERE phone = $1`,
+           FROM users WHERE phone = $1 AND gym_id IS NOT NULL`,
           [phone]
         )
       );
