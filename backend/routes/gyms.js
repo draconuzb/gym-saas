@@ -86,15 +86,15 @@ router.post('/gyms', async (req, res) => {
     );
     const gym = gymResult.rows[0];
 
+    // Set tenant context BEFORE inserting RLS-protected rows.
+    await client.query('SELECT set_config($1, $2, true)', ['app.current_gym_id', String(gym.id)]);
+
     const passwordHash = await bcrypt.hash(admin_password, 10);
     await client.query(
       `INSERT INTO users (gym_id, phone, password_hash, role, first_name, last_name)
        VALUES ($1, $2, $3, 'admin', $4, $5)`,
       [gym.id, admin_phone, passwordHash, admin_first_name, admin_last_name || null]
     );
-
-    // Default plans for the new gym (Oddiy / Premium / VIP)
-    await client.query('SELECT set_config($1, $2, true)', ['app.current_gym_id', String(gym.id)]);
     await client.query(
       `INSERT INTO plans (gym_id, name, emoji, price, days, description, sort_order, visit_quota, calendar_duration_months, allow_multi_entry_per_day)
        VALUES

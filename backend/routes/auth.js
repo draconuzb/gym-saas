@@ -1,7 +1,7 @@
 const express = require('express');
 const router = express.Router();
 const bcrypt = require('bcrypt');
-const { query } = require('../db/db');
+const { query, withGym } = require('../db/db');
 const { signToken, signRefreshToken, verifyRefreshToken, authenticate } = require('../middleware/auth');
 
 const loginAttempts = new Map();
@@ -49,30 +49,43 @@ router.post('/login', loginRateLimit, async (req, res) => {
   }
 
   try {
-    let result;
+    let user;
     if (gym_slug) {
-      result = await query(
-        `SELECT u.id, u.phone, u.role, u.password_hash, u.first_name, u.gym_id, g.slug AS gym_slug, g.name AS gym_name
-         FROM users u
-         JOIN gyms g ON g.id = u.gym_id
-         WHERE u.phone = $1 AND g.slug = $2 AND g.is_active = true`,
-        [phone, gym_slug]
+      // Two-step lookup: resolve gym first (no RLS on gyms), then query users
+      // with tenant context set so RLS lets the row through.
+      const gymRes = await query(
+        `SELECT id, name FROM gyms WHERE slug = $1 AND is_active = true`,
+        [gym_slug]
       );
+      if (gymRes.rows.length === 0) {
+        return res.status(401).json({ success: false, message: 'Invalid credentials.' });
+      }
+      const gym = gymRes.rows[0];
+      const userRes = await withGym(gym.id, async (db) =>
+        db.query(
+          `SELECT id, phone, role, password_hash, first_name, gym_id
+           FROM users WHERE phone = $1`,
+          [phone]
+        )
+      );
+      if (userRes.rows.length === 0) {
+        return res.status(401).json({ success: false, message: 'Invalid credentials.' });
+      }
+      user = { ...userRes.rows[0], gym_slug, gym_name: gym.name };
     } else {
-      // No gym_slug provided: only super_admin can log in this way.
-      result = await query(
+      // Super-admin login. RLS policy on users allows gym_id IS NULL through
+      // even when no tenant context is set, so a plain query works.
+      const result = await query(
         `SELECT id, phone, role, password_hash, first_name, gym_id
          FROM users
          WHERE phone = $1 AND gym_id IS NULL AND role = 'super_admin'`,
         [phone]
       );
+      if (result.rows.length === 0) {
+        return res.status(401).json({ success: false, message: 'Invalid credentials.' });
+      }
+      user = result.rows[0];
     }
-
-    if (result.rows.length === 0) {
-      return res.status(401).json({ success: false, message: 'Invalid credentials.' });
-    }
-
-    const user = result.rows[0];
     const isValid = await bcrypt.compare(password, user.password_hash);
     if (!isValid) {
       return res.status(401).json({ success: false, message: 'Invalid credentials.' });
@@ -126,15 +139,22 @@ router.get('/gyms-by-phone', async (req, res) => {
   if (!phone) return res.json({ success: true, gyms: [] });
 
   try {
-    const result = await query(
-      `SELECT g.slug, g.name
-       FROM users u
-       JOIN gyms g ON g.id = u.gym_id
-       WHERE u.phone = $1 AND g.is_active = true
-       ORDER BY g.name`,
-      [phone]
+    // users is RLS-protected; iterate gyms and check each one inside its own
+    // tenant context. N+1 — acceptable since this endpoint is only hit at
+    // login time and gym counts stay small.
+    const gymsRes = await query(
+      `SELECT id, slug, name FROM gyms WHERE is_active = true ORDER BY name`
     );
-    res.json({ success: true, gyms: result.rows });
+    const matched = [];
+    for (const gym of gymsRes.rows) {
+      const userRes = await withGym(gym.id, async (db) =>
+        db.query('SELECT 1 FROM users WHERE phone = $1 LIMIT 1', [phone])
+      ).catch(() => ({ rows: [] }));
+      if (userRes.rows.length > 0) {
+        matched.push({ slug: gym.slug, name: gym.name });
+      }
+    }
+    res.json({ success: true, gyms: matched });
   } catch (err) {
     console.error('[Auth] gyms-by-phone error:', err.message);
     res.status(500).json({ success: false, message: 'Internal server error.' });
@@ -155,18 +175,25 @@ router.post('/change-password', authenticate, async (req, res) => {
   }
 
   try {
-    const result = await query('SELECT id, password_hash FROM users WHERE id = $1', [req.user.id]);
+    const lookup = req.user.gym_id == null
+      ? () => query('SELECT id, password_hash FROM users WHERE id = $1', [req.user.id])
+      : () => withGym(req.user.gym_id, async (db) =>
+          db.query('SELECT id, password_hash FROM users WHERE id = $1', [req.user.id]));
+    const result = await lookup();
     if (result.rows.length === 0) {
       return res.status(404).json({ success: false, message: 'User not found.' });
     }
-
     const isValid = await bcrypt.compare(currentPassword, result.rows[0].password_hash);
     if (!isValid) {
       return res.status(401).json({ success: false, message: 'Current password is incorrect.' });
     }
-
     const newHash = await bcrypt.hash(newPassword, 10);
-    await query('UPDATE users SET password_hash = $1 WHERE id = $2', [newHash, req.user.id]);
+    if (req.user.gym_id == null) {
+      await query('UPDATE users SET password_hash = $1 WHERE id = $2', [newHash, req.user.id]);
+    } else {
+      await withGym(req.user.gym_id, async (db) =>
+        db.query('UPDATE users SET password_hash = $1 WHERE id = $2', [newHash, req.user.id]));
+    }
     res.json({ success: true, message: 'Password changed successfully.' });
   } catch (err) {
     console.error('[Auth] Change password error:', err.message);
@@ -185,7 +212,11 @@ router.post('/refresh', async (req, res) => {
 
   try {
     const decoded = verifyRefreshToken(refreshToken);
-    const result = await query('SELECT id, role, gym_id FROM users WHERE id = $1', [decoded.id]);
+    const result = decoded.gym_id == null
+      ? await query('SELECT id, role, gym_id FROM users WHERE id = $1', [decoded.id])
+      : await withGym(decoded.gym_id, async (db) =>
+          db.query('SELECT id, role, gym_id FROM users WHERE id = $1', [decoded.id])
+        );
     if (result.rows.length === 0) {
       return res.status(401).json({ success: false, message: 'User not found.' });
     }

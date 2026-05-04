@@ -1,5 +1,5 @@
 const jwt = require('jsonwebtoken');
-const { query } = require('../db/db');
+const { query, withGym } = require('../db/db');
 
 const JWT_SECRET = process.env.JWT_SECRET;
 
@@ -31,10 +31,13 @@ const authenticate = async (req, res, next) => {
     const decoded = jwt.verify(token, secret);
     req.user = decoded;
 
-    const userCheck = await query(
-      'SELECT id, gym_id, role FROM users WHERE id = $1',
-      [decoded.id]
-    );
+    // Super-admin (gym_id NULL) is visible without tenant context;
+    // tenant users are RLS-filtered, so set context first.
+    const userCheck = decoded.gym_id == null
+      ? await query('SELECT id, gym_id, role FROM users WHERE id = $1', [decoded.id])
+      : await withGym(decoded.gym_id, async (db) =>
+          db.query('SELECT id, gym_id, role FROM users WHERE id = $1', [decoded.id])
+        );
     if (userCheck.rows.length === 0) {
       return res.status(401).json({ success: false, message: 'User account no longer exists.' });
     }

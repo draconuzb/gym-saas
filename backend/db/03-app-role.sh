@@ -1,0 +1,24 @@
+#!/bin/bash
+# Create a non-superuser application role.
+# Postgres SUPERUSER roles bypass RLS — even with FORCE ROW LEVEL SECURITY —
+# so the API must connect as a regular role for tenant isolation to work.
+set -e
+
+psql -v ON_ERROR_STOP=1 --username "$POSTGRES_USER" --dbname "$POSTGRES_DB" <<-EOSQL
+  CREATE ROLE gym_app LOGIN PASSWORD '$POSTGRES_PASSWORD';
+
+  GRANT USAGE ON SCHEMA public TO gym_app;
+
+  GRANT SELECT, INSERT, UPDATE, DELETE, REFERENCES, TRIGGER
+    ON ALL TABLES IN SCHEMA public TO gym_app;
+
+  GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA public TO gym_app;
+
+  GRANT EXECUTE ON ALL FUNCTIONS IN SCHEMA public TO gym_app;
+
+  ALTER DEFAULT PRIVILEGES FOR ROLE $POSTGRES_USER IN SCHEMA public
+    GRANT SELECT, INSERT, UPDATE, DELETE, REFERENCES, TRIGGER ON TABLES TO gym_app;
+
+  ALTER DEFAULT PRIVILEGES FOR ROLE $POSTGRES_USER IN SCHEMA public
+    GRANT USAGE, SELECT ON SEQUENCES TO gym_app;
+EOSQL
