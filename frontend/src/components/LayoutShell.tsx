@@ -6,8 +6,10 @@ import Sidebar from "./Sidebar";
 export default function LayoutShell({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();
   const isLogin = pathname === "/login";
+  // Super-admin platform views render full-bleed (no sidebar)
+  const isSuperAdminView = pathname?.startsWith("/admin/");
 
-  if (isLogin) return <>{children}</>;
+  if (isLogin || isSuperAdminView) return <>{children}</>;
 
   return (
     <div className="dashboard-container">

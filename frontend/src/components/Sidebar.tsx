@@ -34,10 +34,18 @@ export default function Sidebar() {
   const { user } = useAuth();
   const [mobileOpen, setMobileOpen] = useState(false);
 
-  const isAdmin = user?.role === "admin";
+  const isAdmin = user?.role === "admin" || user?.role === "super_admin";
+  const isSuperAdmin = user?.role === "super_admin";
   const visibleNav = navKeys.filter(
     (item) => isAdmin || !adminOnlyPaths.includes(item.href)
   );
+
+  // Display the gym name (or "Super Admin" when not currently scoped to one)
+  const gymLabel = isSuperAdmin
+    ? (typeof window !== "undefined" && localStorage.getItem("activeGymId")
+        ? `Gym #${localStorage.getItem("activeGymId")}`
+        : "Super Admin")
+    : (user?.gymName || "GymSystem");
 
   return (
     <>
@@ -71,7 +79,24 @@ export default function Sidebar() {
       {mobileOpen ? "\u2715" : "\u2630"}
     </button>
     <aside className={`sidebar${mobileOpen ? " mobile-open" : ""}`}>
-      <div className="brand">GymSystem</div>
+      <div className="brand">{gymLabel}</div>
+      {isSuperAdmin && (
+        <Link
+          href="/admin/gyms"
+          className="nav-item"
+          onClick={() => setMobileOpen(false)}
+          style={{
+            background: "rgba(0,242,254,0.08)",
+            border: "1px solid rgba(0,242,254,0.25)",
+            margin: "0.25rem 0 0.75rem",
+            fontSize: "0.85rem",
+            textAlign: "center",
+            display: "block",
+          }}
+        >
+          ← Zallar ro'yxati
+        </Link>
+      )}
       <nav>
         <ul className="nav-links">
           {visibleNav.map((item) => (

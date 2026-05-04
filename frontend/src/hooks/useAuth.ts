@@ -45,7 +45,6 @@ export function useAuth() {
     setLoading(false);
   }, []);
 
-  // Auto-refresh token every 50 minutes (token expires in 1h)
   useEffect(() => {
     if (!token) return;
     const interval = setInterval(async () => {
@@ -59,8 +58,18 @@ export function useAuth() {
     localStorage.removeItem("token");
     localStorage.removeItem("user");
     localStorage.removeItem("refreshToken");
+    localStorage.removeItem("activeGymId");
     router.push("/login");
   }, [router]);
+
+  // Super-admin "switch into" a gym for tenant-scoped views.
+  // Stored in localStorage so it persists across reloads.
+  const setActiveGymId = useCallback((id: number | null) => {
+    if (id == null) localStorage.removeItem("activeGymId");
+    else localStorage.setItem("activeGymId", String(id));
+    // Notify other tabs/components
+    window.dispatchEvent(new Event("activeGymIdChanged"));
+  }, []);
 
   const fetchWithAuth = useCallback(async (url: string, options: RequestInit = {}) => {
     let t = localStorage.getItem("token");
@@ -68,33 +77,34 @@ export function useAuth() {
       router.push("/login");
       throw new Error("No token");
     }
-    let res = await fetch(url, {
-      ...options,
-      cache: 'no-store',
-      headers: {
-        ...options.headers,
-        Authorization: `Bearer ${t}`,
+
+    const buildHeaders = (tok: string) => {
+      const h: Record<string, string> = {
+        ...(options.headers as Record<string, string> | undefined),
+        Authorization: `Bearer ${tok}`,
         "Content-Type": "application/json",
         "Cache-Control": "no-cache, no-store, must-revalidate",
         "Pragma": "no-cache",
-      },
-    });
-    // If access token expired, try refresh once
+      };
+      // For super-admin, attach the active gym id (if set) so tenant routes work
+      const u = localStorage.getItem("user");
+      try {
+        const parsed = u ? JSON.parse(u) : null;
+        if (parsed?.role === "super_admin") {
+          const activeGymId = localStorage.getItem("activeGymId");
+          if (activeGymId) h["X-Gym-Id"] = activeGymId;
+        }
+      } catch { /* ignore */ }
+      return h;
+    };
+
+    let res = await fetch(url, { ...options, cache: 'no-store', headers: buildHeaders(t) });
+
     if (res.status === 401 || res.status === 403) {
       const newToken = await tryRefresh();
       if (newToken) {
         setToken(newToken);
-        res = await fetch(url, {
-          ...options,
-          cache: 'no-store',
-          headers: {
-            ...options.headers,
-            Authorization: `Bearer ${newToken}`,
-            "Content-Type": "application/json",
-            "Cache-Control": "no-cache, no-store, must-revalidate",
-            "Pragma": "no-cache",
-          },
-        });
+        res = await fetch(url, { ...options, cache: 'no-store', headers: buildHeaders(newToken) });
         if (res.status === 401 || res.status === 403) {
           logout();
           throw new Error("Session expired");
@@ -107,5 +117,5 @@ export function useAuth() {
     return res;
   }, [router, logout]);
 
-  return { token, user, loading, logout, fetchWithAuth };
+  return { token, user, loading, logout, fetchWithAuth, setActiveGymId };
 }

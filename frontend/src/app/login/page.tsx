@@ -1,18 +1,45 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import { useLocale } from "@/hooks/useLocale";
 
 const API = process.env.NEXT_PUBLIC_API_URL || "";
+
+type GymOption = { slug: string; name: string };
 
 export default function LoginPage() {
   const router = useRouter();
   const { t } = useLocale();
   const [phone, setPhone] = useState("");
   const [password, setPassword] = useState("");
+  const [gymSlug, setGymSlug] = useState("");
+  const [gymOptions, setGymOptions] = useState<GymOption[] | null>(null);
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
+
+  // When the phone changes (debounced), look up which gyms this phone is
+  // registered with. If exactly one → preselect it. If 0 → super-admin path.
+  useEffect(() => {
+    if (!phone || phone.length < 7) {
+      setGymOptions(null);
+      setGymSlug("");
+      return;
+    }
+    const timer = setTimeout(async () => {
+      try {
+        const res = await fetch(`${API}/api/auth/gyms-by-phone?phone=${encodeURIComponent(phone)}`);
+        const data = await res.json();
+        if (data.success) {
+          const gyms: GymOption[] = data.gyms || [];
+          setGymOptions(gyms);
+          if (gyms.length === 1) setGymSlug(gyms[0].slug);
+          else if (gyms.length === 0) setGymSlug("");
+        }
+      } catch { /* ignore — fallback to manual entry */ }
+    }, 400);
+    return () => clearTimeout(timer);
+  }, [phone]);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -20,10 +47,13 @@ export default function LoginPage() {
     setLoading(true);
 
     try {
+      const body: Record<string, string> = { phone, password };
+      if (gymSlug) body.gym_slug = gymSlug;
+
       const res = await fetch(`${API}/api/auth/login`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ phone, password }),
+        body: JSON.stringify(body),
       });
       const data = await res.json();
 
@@ -35,12 +65,33 @@ export default function LoginPage() {
       localStorage.setItem("token", data.token);
       if (data.refreshToken) localStorage.setItem("refreshToken", data.refreshToken);
       localStorage.setItem("user", JSON.stringify(data.user));
-      router.push("/");
+
+      // Super-admin lands on the platform dashboard; tenant users on the gym dashboard
+      if (data.user?.role === "super_admin") {
+        router.push("/admin/gyms");
+      } else {
+        router.push("/");
+      }
     } catch {
       setError(t("common.serverError"));
     } finally {
       setLoading(false);
     }
+  };
+
+  const inputStyle: React.CSSProperties = {
+    width: "100%", padding: "0.9rem 1rem",
+    background: "rgba(255,255,255,0.05)",
+    border: "1px solid var(--border-glass)",
+    borderRadius: "12px",
+    color: "var(--text-main)",
+    fontSize: "1rem",
+    outline: "none",
+  };
+  const labelStyle: React.CSSProperties = {
+    color: "var(--text-muted)", fontSize: "0.8rem",
+    display: "block", marginBottom: "0.5rem",
+    textTransform: "uppercase", letterSpacing: "1px",
   };
 
   return (
@@ -64,46 +115,43 @@ export default function LoginPage() {
         )}
 
         <div>
-          <label style={{ color: "var(--text-muted)", fontSize: "0.8rem", display: "block", marginBottom: "0.5rem", textTransform: "uppercase", letterSpacing: "1px" }}>
-            {t("login.phone")}
-          </label>
+          <label style={labelStyle}>{t("login.phone")}</label>
           <input
             type="tel"
             placeholder="+998 90 123 45 67"
             value={phone}
             onChange={(e) => setPhone(e.target.value)}
             required
-            style={{
-              width: "100%", padding: "0.9rem 1rem",
-              background: "rgba(255,255,255,0.05)",
-              border: "1px solid var(--border-glass)",
-              borderRadius: "12px",
-              color: "var(--text-main)",
-              fontSize: "1rem",
-              outline: "none",
-            }}
+            style={inputStyle}
           />
         </div>
 
+        {gymOptions && gymOptions.length > 1 && (
+          <div>
+            <label style={labelStyle}>Zal / Gym</label>
+            <select
+              value={gymSlug}
+              onChange={(e) => setGymSlug(e.target.value)}
+              required
+              style={{ ...inputStyle, cursor: "pointer" }}
+            >
+              <option value="">— Tanlang —</option>
+              {gymOptions.map(g => (
+                <option key={g.slug} value={g.slug}>{g.name}</option>
+              ))}
+            </select>
+          </div>
+        )}
+
         <div>
-          <label style={{ color: "var(--text-muted)", fontSize: "0.8rem", display: "block", marginBottom: "0.5rem", textTransform: "uppercase", letterSpacing: "1px" }}>
-            {t("login.password")}
-          </label>
+          <label style={labelStyle}>{t("login.password")}</label>
           <input
             type="password"
             placeholder="••••••••"
             value={password}
             onChange={(e) => setPassword(e.target.value)}
             required
-            style={{
-              width: "100%", padding: "0.9rem 1rem",
-              background: "rgba(255,255,255,0.05)",
-              border: "1px solid var(--border-glass)",
-              borderRadius: "12px",
-              color: "var(--text-main)",
-              fontSize: "1rem",
-              outline: "none",
-            }}
+            style={inputStyle}
           />
         </div>
 
