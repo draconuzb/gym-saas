@@ -20,12 +20,14 @@ function genSecret(bytes = 32) {
  */
 router.get('/gyms', async (req, res) => {
   try {
+    // Counts use SECURITY DEFINER functions because the RLS-protected
+    // members/users tables would return 0 rows in the super-admin context.
     const result = await query(`
       SELECT
         g.id, g.slug, g.name, g.phone, g.is_active, g.plan,
         g.telegram_bot_username, g.created_at,
-        (SELECT COUNT(*) FROM members WHERE gym_id = g.id) AS members_count,
-        (SELECT COUNT(*) FROM users WHERE gym_id = g.id)   AS staff_count
+        gym_member_count(g.id) AS members_count,
+        gym_staff_count(g.id)  AS staff_count
       FROM gyms g
       ORDER BY g.created_at DESC
     `);

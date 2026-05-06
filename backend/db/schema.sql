@@ -302,4 +302,17 @@ CREATE POLICY tenant_isolation ON users
     USING (gym_id = current_gym_id() OR gym_id IS NULL)
     WITH CHECK (gym_id = current_gym_id() OR gym_id IS NULL);
 
+-- ============================================================
+-- Cross-tenant aggregates (super-admin only).
+-- These run with the function owner's privileges (gym_admin),
+-- bypassing RLS so super-admin platform views can show real counts.
+-- ============================================================
+CREATE OR REPLACE FUNCTION gym_member_count(p_gym_id INT) RETURNS BIGINT
+  LANGUAGE sql STABLE SECURITY DEFINER
+  AS 'SELECT COUNT(*) FROM members WHERE gym_id = $1';
+
+CREATE OR REPLACE FUNCTION gym_staff_count(p_gym_id INT) RETURNS BIGINT
+  LANGUAGE sql STABLE SECURITY DEFINER
+  AS 'SELECT COUNT(*) FROM users WHERE gym_id = $1';
+
 COMMIT;
