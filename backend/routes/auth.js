@@ -139,7 +139,7 @@ router.post('/login', loginRateLimit, async (req, res) => {
  */
 router.get('/gyms-by-phone', async (req, res) => {
   const { phone } = req.query;
-  if (!phone) return res.json({ success: true, gyms: [] });
+  if (!phone) return res.json({ success: true, gyms: [], has_super_admin: false });
 
   try {
     // users is RLS-protected; iterate gyms and check each one inside its own
@@ -157,7 +157,16 @@ router.get('/gyms-by-phone', async (req, res) => {
         matched.push({ slug: gym.slug, name: gym.name });
       }
     }
-    res.json({ success: true, gyms: matched });
+
+    // Also check for a super_admin with this phone (gym_id IS NULL).
+    // RLS lets gym_id IS NULL through under any context.
+    const superRes = await query(
+      `SELECT 1 FROM users WHERE phone = $1 AND gym_id IS NULL AND role = 'super_admin' LIMIT 1`,
+      [phone]
+    );
+    const has_super_admin = superRes.rows.length > 0;
+
+    res.json({ success: true, gyms: matched, has_super_admin });
   } catch (err) {
     console.error('[Auth] gyms-by-phone error:', err.message);
     res.status(500).json({ success: false, message: 'Internal server error.' });

@@ -30,11 +30,9 @@ export default function AdminGymsPage() {
 
   useEffect(() => {
     if (loading) return;
-    if (!user || user.role !== "super_admin") {
-      router.push("/");
-      return;
-    }
-    refresh();
+    // Don't auto-redirect — show a clear "wrong role" message so the user
+    // sees what's happening instead of being silently bounced to /.
+    if (user && user.role === "super_admin") refresh();
   }, [loading, user]);
 
   const refresh = async () => {
@@ -62,8 +60,33 @@ export default function AdminGymsPage() {
     }
   };
 
-  if (loading || !user) return null;
-  if (user.role !== "super_admin") return null;
+  if (loading) return null;
+
+  // No session — point at the login page
+  if (!user) {
+    return (
+      <NotAuthorized
+        title="Tizimga kirish kerak"
+        body="Bu sahifa platforma super admini uchun. Iltimos, avval tizimga kiring."
+        ctaLabel="Login sahifasiga"
+        ctaHref="/login"
+        currentRole={null}
+      />
+    );
+  }
+
+  // Logged in but not super_admin (e.g. tenant admin)
+  if (user.role !== "super_admin") {
+    return (
+      <NotAuthorized
+        title="Bu sahifa faqat super admin uchun"
+        body={`Sizning hisobingiz: ${user.role === "admin" ? "Zal admini" : user.role}${user.gymName ? ` (${user.gymName})` : ""}. Super admin sifatida kirish uchun avval chiqing.`}
+        ctaLabel="Chiqish va qaytadan kirish"
+        ctaOnClick={logout}
+        currentRole={user.role}
+      />
+    );
+  }
 
   return (
     <div style={{ padding: "2rem", maxWidth: 1100, margin: "0 auto" }}>
@@ -157,6 +180,42 @@ const btnGhost: React.CSSProperties = {
   border: "1px solid var(--border-glass)", borderRadius: 12,
   color: "var(--text-muted)", cursor: "pointer",
 };
+
+function NotAuthorized({ title, body, ctaLabel, ctaHref, ctaOnClick, currentRole }: {
+  title: string;
+  body: string;
+  ctaLabel: string;
+  ctaHref?: string;
+  ctaOnClick?: () => void;
+  currentRole: string | null;
+}) {
+  return (
+    <div style={{ minHeight: "80vh", display: "flex", alignItems: "center", justifyContent: "center", padding: "2rem" }}>
+      <div className="glass-card" style={{ maxWidth: 480, padding: "2rem", textAlign: "center" }}>
+        <div style={{ fontSize: "2.5rem", marginBottom: "0.8rem" }}>🔐</div>
+        <h2 style={{ fontSize: "1.4rem", marginBottom: "0.6rem" }}>{title}</h2>
+        <p style={{ color: "var(--text-muted)", marginBottom: "1.5rem", lineHeight: 1.6 }}>{body}</p>
+        {currentRole && (
+          <div style={{ background: "rgba(255,255,255,0.04)", borderRadius: 8, padding: "0.6rem 0.8rem", marginBottom: "1.3rem", fontSize: "0.85rem", color: "var(--text-muted)", textAlign: "left" }}>
+            Joriy hisob roli: <strong style={{ color: "var(--text-main)", fontFamily: "monospace" }}>{currentRole}</strong>
+          </div>
+        )}
+        <div style={{ display: "flex", gap: "0.6rem", justifyContent: "center" }}>
+          {ctaHref && (
+            <a href={ctaHref} className="btn-primary" style={{ padding: "0.7rem 1.4rem", textDecoration: "none", display: "inline-block" }}>
+              {ctaLabel}
+            </a>
+          )}
+          {ctaOnClick && (
+            <button onClick={ctaOnClick} className="btn-primary" style={{ padding: "0.7rem 1.4rem" }}>
+              {ctaLabel}
+            </button>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
 
 function BotBadge({ gym, onReload }: { gym: Gym; onReload: () => void }) {
   if (!gym.has_bot_token) {

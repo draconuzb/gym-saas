@@ -7,23 +7,28 @@ import { useLocale } from "@/hooks/useLocale";
 const API = process.env.NEXT_PUBLIC_API_URL || "";
 
 type GymOption = { slug: string; name: string };
+const SUPER_OPTION_VALUE = "__super__";
 
 export default function LoginPage() {
   const router = useRouter();
   const { t } = useLocale();
   const [phone, setPhone] = useState("");
   const [password, setPassword] = useState("");
-  const [gymSlug, setGymSlug] = useState("");
+  // selected: "" = none yet, "__super__" = super-admin path, "<slug>" = tenant
+  const [selected, setSelected] = useState("");
   const [gymOptions, setGymOptions] = useState<GymOption[] | null>(null);
+  const [hasSuperAdmin, setHasSuperAdmin] = useState(false);
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
 
-  // When the phone changes (debounced), look up which gyms this phone is
-  // registered with. If exactly one → preselect it. If 0 → super-admin path.
+  // Total options including the optional "Super admin (platform)" entry
+  const totalOptions = (gymOptions?.length ?? 0) + (hasSuperAdmin ? 1 : 0);
+
   useEffect(() => {
     if (!phone || phone.length < 7) {
       setGymOptions(null);
-      setGymSlug("");
+      setHasSuperAdmin(false);
+      setSelected("");
       return;
     }
     const timer = setTimeout(async () => {
@@ -33,10 +38,18 @@ export default function LoginPage() {
         if (data.success) {
           const gyms: GymOption[] = data.gyms || [];
           setGymOptions(gyms);
-          if (gyms.length === 1) setGymSlug(gyms[0].slug);
-          else if (gyms.length === 0) setGymSlug("");
+          setHasSuperAdmin(!!data.has_super_admin);
+          // Auto-select only when there's exactly ONE option overall.
+          // If both a gym and a super-admin record share the phone, we
+          // ALWAYS show the picker so the user explicitly chooses.
+          const total = gyms.length + (data.has_super_admin ? 1 : 0);
+          if (total === 1) {
+            setSelected(gyms[0]?.slug ?? SUPER_OPTION_VALUE);
+          } else {
+            setSelected("");
+          }
         }
-      } catch { /* ignore — fallback to manual entry */ }
+      } catch { /* ignore */ }
     }, 400);
     return () => clearTimeout(timer);
   }, [phone]);
@@ -48,7 +61,9 @@ export default function LoginPage() {
 
     try {
       const body: Record<string, string> = { phone, password };
-      if (gymSlug) body.gym_slug = gymSlug;
+      // "__super__" = super-admin login, omit gym_slug.
+      // Empty selected with no options found also means super-admin.
+      if (selected && selected !== SUPER_OPTION_VALUE) body.gym_slug = selected;
 
       const res = await fetch(`${API}/api/auth/login`, {
         method: "POST",
@@ -126,20 +141,26 @@ export default function LoginPage() {
           />
         </div>
 
-        {gymOptions && gymOptions.length > 1 && (
+        {totalOptions > 1 && (
           <div>
-            <label style={labelStyle}>Zal / Gym</label>
+            <label style={labelStyle}>Hisob turi</label>
             <select
-              value={gymSlug}
-              onChange={(e) => setGymSlug(e.target.value)}
+              value={selected}
+              onChange={(e) => setSelected(e.target.value)}
               required
               style={{ ...inputStyle, cursor: "pointer" }}
             >
               <option value="">— Tanlang —</option>
-              {gymOptions.map(g => (
-                <option key={g.slug} value={g.slug}>{g.name}</option>
+              {hasSuperAdmin && (
+                <option value={SUPER_OPTION_VALUE}>🛡 Super Admin (platforma)</option>
+              )}
+              {gymOptions?.map(g => (
+                <option key={g.slug} value={g.slug}>🏋 {g.name}</option>
               ))}
             </select>
+            <p style={{ fontSize: "0.78rem", color: "var(--text-muted)", marginTop: "0.4rem" }}>
+              Bu telefon bir necha hisob bilan bog'langan. Qaysi hisobga kirayotganingizni tanlang.
+            </p>
           </div>
         )}
 
