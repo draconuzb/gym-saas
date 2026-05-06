@@ -792,7 +792,9 @@ async function sendMessage(gymId, telegramId, text, opts = {}) {
  */
 async function reloadBotForGym(gymId) {
   const result = await query(
-    `SELECT id, slug, name, telegram_bot_token, telegram_bot_username, qr_hmac_secret, hardware_secret
+    `SELECT id, slug, name, is_active,
+            telegram_bot_token, telegram_bot_username,
+            qr_hmac_secret, hardware_secret
      FROM gyms WHERE id = $1`,
     [gymId]
   );
@@ -815,7 +817,31 @@ async function reloadBotForGym(gymId) {
     bot.launch({ dropPendingUpdates: false }).catch(err =>
       console.error(`[Bot] reload gym=${gym.slug} launch failed:`, err.message));
   }
+
+  // Backfill telegram_bot_username if missing (e.g. when the token was
+  // inserted via raw SQL or before getMe was integrated).
+  if (!gym.telegram_bot_username) {
+    try {
+      const me = await bot.telegram.getMe();
+      if (me?.username) {
+        await query(
+          `UPDATE gyms SET telegram_bot_username = $1, updated_at = NOW() WHERE id = $2`,
+          [me.username, gym.id]
+        );
+      }
+    } catch (err) {
+      console.warn(`[Bot] gym=${gym.slug} getMe failed for username backfill:`, err.message);
+    }
+  }
   return true;
 }
 
-module.exports = { startAllBots, stopAllBots, sendMessage, reloadBotForGym };
+/**
+ * Returns true if a Telegraf instance is currently loaded for the given gym.
+ * (Used by routes/gyms.js to surface bot status in the super-admin list.)
+ */
+function isBotRunning(gymId) {
+  return bots.has(gymId);
+}
+
+module.exports = { startAllBots, stopAllBots, sendMessage, reloadBotForGym, isBotRunning };

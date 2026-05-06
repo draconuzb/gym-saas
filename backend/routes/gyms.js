@@ -9,10 +9,55 @@ const { authenticate, authorize } = require('../middleware/auth');
 router.use(authenticate, authorize('super_admin'));
 
 const SLUG_RE = /^[a-z0-9](?:[a-z0-9-]{0,48}[a-z0-9])?$/;
+const RESERVED_SLUGS = new Set([
+  'admin', 'api', 'auth', 'login', 'logout', 'super', 'kiosk',
+  'bot', 'webhook', 'health', 'static', 'public', 'app', 'www',
+]);
+const TOKEN_RE = /^\d+:[A-Za-z0-9_-]{30,}$/;
 
 function genSecret(bytes = 32) {
   return crypto.randomBytes(bytes).toString('hex');
 }
+
+/**
+ * Call Telegram getMe with a token. Returns the bot's identity if the
+ * token is valid, or null otherwise. Used by /test-bot-token below and
+ * during gym creation to auto-fill telegram_bot_username.
+ */
+async function telegramGetMe(token) {
+  if (!TOKEN_RE.test(token)) return null;
+  try {
+    const res = await fetch(`https://api.telegram.org/bot${token}/getMe`, {
+      signal: AbortSignal.timeout(8000),
+    });
+    const data = await res.json();
+    if (!data.ok || !data.result) return null;
+    return {
+      id: data.result.id,
+      username: data.result.username,
+      first_name: data.result.first_name,
+    };
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * POST /api/super/test-bot-token
+ * Body: { token }
+ * Returns: { success, valid, bot? } — valid=false means bad token,
+ * valid=true returns { id, username, first_name } from getMe.
+ * Used by the wizard to validate before saving.
+ */
+router.post('/test-bot-token', async (req, res) => {
+  const { token } = req.body || {};
+  if (!token) return res.status(400).json({ success: false, message: 'token is required.' });
+  const bot = await telegramGetMe(token);
+  if (!bot) {
+    return res.json({ success: true, valid: false, message: 'Token noto\'g\'ri yoki bot ulanib bo\'lmadi.' });
+  }
+  res.json({ success: true, valid: true, bot });
+});
 
 /**
  * GET /api/super/gyms
@@ -25,13 +70,16 @@ router.get('/gyms', async (req, res) => {
     const result = await query(`
       SELECT
         g.id, g.slug, g.name, g.phone, g.is_active, g.plan,
+        g.telegram_bot_token IS NOT NULL AS has_bot_token,
         g.telegram_bot_username, g.created_at,
         gym_member_count(g.id) AS members_count,
         gym_staff_count(g.id)  AS staff_count
       FROM gyms g
       ORDER BY g.created_at DESC
     `);
-    res.json({ success: true, gyms: result.rows });
+    const { isBotRunning } = require('../bot');
+    const gyms = result.rows.map(r => ({ ...r, bot_running: isBotRunning(r.id) }));
+    res.json({ success: true, gyms });
   } catch (err) {
     console.error('[Super] List gyms error:', err.message);
     res.status(500).json({ success: false, message: 'Internal server error.' });
@@ -64,8 +112,24 @@ router.post('/gyms', async (req, res) => {
       message: 'slug must be 1-50 lowercase letters/digits/hyphens, not starting/ending with a hyphen.',
     });
   }
+  if (RESERVED_SLUGS.has(slug)) {
+    return res.status(400).json({ success: false, message: `slug '${slug}' is reserved.` });
+  }
   if (admin_password.length < 6) {
     return res.status(400).json({ success: false, message: 'Admin password must be at least 6 characters.' });
+  }
+
+  // If a bot token was given, validate against Telegram and auto-fill username
+  let resolvedBotUsername = telegram_bot_username || null;
+  if (telegram_bot_token) {
+    const bot = await telegramGetMe(telegram_bot_token);
+    if (!bot) {
+      return res.status(400).json({
+        success: false,
+        message: 'Telegram bot token noto\'g\'ri yoki bot ulanib bo\'lmadi.',
+      });
+    }
+    resolvedBotUsername = bot.username;
   }
 
   const client = await require('../db/db').getClient();
@@ -82,7 +146,7 @@ router.post('/gyms', async (req, res) => {
       [
         slug, name, phone || null, address || null,
         timezone || 'Asia/Tashkent', plan || 'standard',
-        telegram_bot_token || null, telegram_bot_username || null,
+        telegram_bot_token || null, resolvedBotUsername,
         genSecret(32), genSecret(32),
       ]
     );
@@ -115,7 +179,23 @@ router.post('/gyms', async (req, res) => {
     );
 
     await client.query('COMMIT');
-    res.status(201).json({ success: true, gym });
+
+    // If a bot token was provided, spin up that gym's Telegraf instance
+    // immediately so the bot is reachable without restarting the server.
+    let botStarted = false;
+    if (telegram_bot_token) {
+      try {
+        const { reloadBotForGym } = require('../bot');
+        botStarted = await reloadBotForGym(gym.id);
+      } catch (err) {
+        console.error('[Super] Failed to start bot for new gym:', err.message);
+      }
+    }
+
+    res.status(201).json({
+      success: true,
+      gym: { ...gym, telegram_bot_username: resolvedBotUsername, bot_started: botStarted },
+    });
   } catch (err) {
     await client.query('ROLLBACK').catch(() => {});
     if (err.code === '23505') {
@@ -166,32 +246,75 @@ router.patch('/gyms/:id', async (req, res) => {
 
   const allowed = ['name', 'phone', 'address', 'timezone', 'plan', 'is_active',
                    'telegram_bot_token', 'telegram_bot_username'];
-  const fields = [];
-  const values = [];
-  let i = 1;
+  const updates = {};
   for (const key of allowed) {
-    if (key in req.body) {
-      fields.push(`${key} = $${i++}`);
-      values.push(req.body[key]);
-    }
+    if (key in req.body) updates[key] = req.body[key];
   }
-  if (fields.length === 0) {
+  if (Object.keys(updates).length === 0) {
     return res.status(400).json({ success: false, message: 'No valid fields to update.' });
   }
+
+  // If the bot token is being changed, validate it and auto-fill username.
+  if (updates.telegram_bot_token !== undefined && updates.telegram_bot_token !== null && updates.telegram_bot_token !== '') {
+    const bot = await telegramGetMe(updates.telegram_bot_token);
+    if (!bot) {
+      return res.status(400).json({
+        success: false,
+        message: 'Telegram bot token noto\'g\'ri yoki bot ulanib bo\'lmadi.',
+      });
+    }
+    if (!('telegram_bot_username' in updates) || !updates.telegram_bot_username) {
+      updates.telegram_bot_username = bot.username;
+    }
+  }
+
+  const fields = Object.keys(updates).map((k, i) => `${k} = $${i + 1}`);
+  const values = [...Object.values(updates)];
   fields.push('updated_at = NOW()');
   values.push(id);
 
   try {
     const result = await query(
-      `UPDATE gyms SET ${fields.join(', ')} WHERE id = $${i} RETURNING id, slug, name, is_active`,
+      `UPDATE gyms SET ${fields.join(', ')} WHERE id = $${values.length} RETURNING id, slug, name, is_active, telegram_bot_username`,
       values
     );
     if (result.rows.length === 0) {
       return res.status(404).json({ success: false, message: 'Gym not found.' });
     }
-    res.json({ success: true, gym: result.rows[0] });
+
+    // If the bot token or is_active changed, reload that gym's bot in-place.
+    let botReloaded = false;
+    if ('telegram_bot_token' in updates || 'is_active' in updates) {
+      try {
+        const { reloadBotForGym } = require('../bot');
+        botReloaded = await reloadBotForGym(id);
+      } catch (err) {
+        console.error('[Super] reloadBotForGym error:', err.message);
+      }
+    }
+    res.json({ success: true, gym: result.rows[0], bot_reloaded: botReloaded });
   } catch (err) {
     console.error('[Super] Update gym error:', err.message);
+    res.status(500).json({ success: false, message: 'Internal server error.' });
+  }
+});
+
+/**
+ * POST /api/super/gyms/:id/reload-bot
+ * Stop and restart the gym's Telegraf instance. Used after manual token
+ * fixes, or to recover if a bot stalled.
+ */
+router.post('/gyms/:id/reload-bot', async (req, res) => {
+  const id = parseInt(req.params.id, 10);
+  if (!Number.isInteger(id) || id <= 0) {
+    return res.status(400).json({ success: false, message: 'Invalid gym id.' });
+  }
+  try {
+    const { reloadBotForGym } = require('../bot');
+    const ok = await reloadBotForGym(id);
+    res.json({ success: true, bot_running: ok });
+  } catch (err) {
+    console.error('[Super] reload-bot error:', err.message);
     res.status(500).json({ success: false, message: 'Internal server error.' });
   }
 });
