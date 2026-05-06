@@ -9,6 +9,9 @@ const { testConnection, withGym } = require('./db/db');
 const { authenticate, requireGym } = require('./middleware/auth');
 
 const app = express();
+// Cloudflare puts the real client in CF-Connecting-IP and also adds
+// X-Forwarded-For. Trust the immediate hop (CF) so req.ip resolves to
+// the leftmost X-Forwarded-For; security helpers prefer CF-Connecting-IP.
 app.set('trust proxy', 1);
 const PORT = process.env.PORT || 5000;
 

@@ -3,36 +3,22 @@ const router = express.Router();
 const bcrypt = require('bcrypt');
 const { query, withGym } = require('../db/db');
 const { signToken, signRefreshToken, verifyRefreshToken, authenticate } = require('../middleware/auth');
+const { clientIp, rateLimiter, accountLockout, redact, validatePassword } = require('../lib/security');
 
-const loginAttempts = new Map();
-const RATE_LIMIT_WINDOW = 15 * 60 * 1000;
-const MAX_ATTEMPTS = 10;
+// Two layers of brute-force protection:
+//   1. Per-IP rate limit — blocks scripted scanning from a single source
+//   2. Per-account lockout — blocks distributed attacks against ONE phone
+//      (a botnet could rotate IPs but the target identity is fixed)
+const loginIpLimit = rateLimiter({
+  keyFn: clientIp,
+  max: 10, windowMs: 15 * 60 * 1000,
+  message: 'Too many login attempts from this address. Try again in 15 minutes.',
+  name: 'login-ip',
+});
 
-setInterval(() => {
-  const now = Date.now();
-  for (const [ip, entry] of loginAttempts) {
-    if (now - entry.firstAttempt > RATE_LIMIT_WINDOW) loginAttempts.delete(ip);
-  }
-}, RATE_LIMIT_WINDOW);
-
-function loginRateLimit(req, res, next) {
-  const ip = req.ip || req.connection.remoteAddress;
-  const now = Date.now();
-  const attempts = loginAttempts.get(ip);
-
-  if (attempts) {
-    if (now - attempts.firstAttempt > RATE_LIMIT_WINDOW) {
-      loginAttempts.delete(ip);
-    } else if (attempts.count >= MAX_ATTEMPTS) {
-      return res.status(429).json({ success: false, message: 'Too many login attempts. Try again in 15 minutes.' });
-    }
-  }
-
-  const entry = loginAttempts.get(ip) || { count: 0, firstAttempt: now };
-  entry.count++;
-  loginAttempts.set(ip, entry);
-  next();
-}
+const loginLockout = accountLockout({
+  max: 5, windowMs: 15 * 60 * 1000, lockMs: 15 * 60 * 1000,
+});
 
 /**
  * POST /api/auth/login
@@ -41,11 +27,23 @@ function loginRateLimit(req, res, next) {
  * - tenant users (admin/receptionist) need gym_slug to disambiguate when
  *   the same phone is registered in multiple gyms
  */
-router.post('/login', loginRateLimit, async (req, res) => {
+router.post('/login', loginIpLimit, async (req, res) => {
   const { phone, password, gym_slug } = req.body;
 
   if (!phone || !password) {
     return res.status(400).json({ success: false, message: 'Phone and password are required.' });
+  }
+
+  // Account-level lockout — keyed on (gym_slug, phone) so each gym's
+  // admin and the platform super-admin lock independently.
+  const lockKey = `${gym_slug || '__super__'}|${phone}`;
+  const lock = loginLockout.guard(lockKey);
+  if (lock.locked) {
+    res.set('Retry-After', String(lock.retryAfter));
+    return res.status(429).json({
+      success: false,
+      message: `Hisob vaqtinchalik bloklangan. ${Math.ceil(lock.retryAfter / 60)} daqiqadan keyin urinib ko'ring.`,
+    });
   }
 
   try {
@@ -58,12 +56,10 @@ router.post('/login', loginRateLimit, async (req, res) => {
         [gym_slug]
       );
       if (gymRes.rows.length === 0) {
+        loginLockout.fail(lockKey);
         return res.status(401).json({ success: false, message: 'Invalid credentials.' });
       }
       const gym = gymRes.rows[0];
-      // Exclude super_admin (gym_id IS NULL) — they sign in via the
-      // gym-less path. Without this, a super_admin with the same phone
-      // as a tenant user would be returned by the RLS-permissive policy.
       const userRes = await withGym(gym.id, async (db) =>
         db.query(
           `SELECT id, phone, role, password_hash, first_name, gym_id
@@ -72,12 +68,11 @@ router.post('/login', loginRateLimit, async (req, res) => {
         )
       );
       if (userRes.rows.length === 0) {
+        loginLockout.fail(lockKey);
         return res.status(401).json({ success: false, message: 'Invalid credentials.' });
       }
       user = { ...userRes.rows[0], gym_slug, gym_name: gym.name };
     } else {
-      // Super-admin login. RLS policy on users allows gym_id IS NULL through
-      // even when no tenant context is set, so a plain query works.
       const result = await query(
         `SELECT id, phone, role, password_hash, first_name, gym_id
          FROM users
@@ -85,15 +80,20 @@ router.post('/login', loginRateLimit, async (req, res) => {
         [phone]
       );
       if (result.rows.length === 0) {
+        loginLockout.fail(lockKey);
         return res.status(401).json({ success: false, message: 'Invalid credentials.' });
       }
       user = result.rows[0];
     }
     const isValid = await bcrypt.compare(password, user.password_hash);
     if (!isValid) {
+      loginLockout.fail(lockKey);
+      console.warn(`[Auth] failed login phone=${redact(phone)} gym=${gym_slug || '__super__'}`);
       return res.status(401).json({ success: false, message: 'Invalid credentials.' });
     }
 
+    // Successful auth — clear any prior failed attempts for this account
+    loginLockout.clear(lockKey);
     const payload = { id: user.id, role: user.role, gym_id: user.gym_id };
     const token = signToken(payload);
     const refreshToken = signRefreshToken(payload);
@@ -182,8 +182,9 @@ router.post('/change-password', authenticate, async (req, res) => {
   if (!currentPassword || !newPassword) {
     return res.status(400).json({ success: false, message: 'Current password and new password are required.' });
   }
-  if (newPassword.length < 6 || newPassword.length > 128) {
-    return res.status(400).json({ success: false, message: 'New password must be 6-128 characters.' });
+  const pwdErr = validatePassword(newPassword);
+  if (pwdErr) {
+    return res.status(400).json({ success: false, message: pwdErr });
   }
 
   try {

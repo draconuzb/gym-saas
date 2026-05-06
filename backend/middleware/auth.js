@@ -2,17 +2,28 @@ const jwt = require('jsonwebtoken');
 const { query, withGym } = require('../db/db');
 
 const JWT_SECRET = process.env.JWT_SECRET;
+const JWT_REFRESH_SECRET = process.env.JWT_REFRESH_SECRET;
 
-if (!JWT_SECRET) {
-  if (process.env.NODE_ENV === 'production') {
+if (process.env.NODE_ENV === 'production') {
+  if (!JWT_SECRET) {
     console.error('[Auth] FATAL: JWT_SECRET is not set in production!');
     process.exit(1);
   }
-  console.warn('[Auth] WARNING: JWT_SECRET not set — using insecure dev secret');
+  if (!JWT_REFRESH_SECRET) {
+    console.error('[Auth] FATAL: JWT_REFRESH_SECRET is not set in production!');
+    process.exit(1);
+  }
+  if (JWT_REFRESH_SECRET === JWT_SECRET) {
+    console.error('[Auth] FATAL: JWT_REFRESH_SECRET must differ from JWT_SECRET.');
+    process.exit(1);
+  }
 }
 
 const secret = JWT_SECRET || 'dev_insecure_secret_DO_NOT_USE_IN_PROD';
-const refreshSecret = process.env.JWT_REFRESH_SECRET || secret + '_refresh';
+// Dev-only fallback. In production we already exited above if it's missing.
+const refreshSecret = JWT_REFRESH_SECRET || (secret + '_refresh_dev_only');
+if (!JWT_SECRET) console.warn('[Auth] WARNING: JWT_SECRET not set — using insecure dev secret');
+if (!JWT_REFRESH_SECRET) console.warn('[Auth] WARNING: JWT_REFRESH_SECRET not set — using derived dev secret');
 
 /**
  * Verify JWT, attach { id, role, gym_id } to req.user.

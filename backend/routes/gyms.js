@@ -4,9 +4,19 @@ const bcrypt = require('bcrypt');
 const crypto = require('crypto');
 const { query, withGym } = require('../db/db');
 const { authenticate, authorize } = require('../middleware/auth');
+const { clientIp, rateLimiter, validatePassword } = require('../lib/security');
 
 // All endpoints in this file require super_admin
 router.use(authenticate, authorize('super_admin'));
+
+// Bot-token validation calls Telegram getMe — it's outbound traffic and
+// could be abused to scan for valid tokens. Cap to 10 / minute per IP.
+const testTokenLimit = rateLimiter({
+  keyFn: clientIp,
+  max: 10, windowMs: 60 * 1000,
+  message: 'Too many bot token tests. Try again in a minute.',
+  name: 'test-bot-token',
+});
 
 const SLUG_RE = /^[a-z0-9](?:[a-z0-9-]{0,48}[a-z0-9])?$/;
 const RESERVED_SLUGS = new Set([
@@ -49,7 +59,7 @@ async function telegramGetMe(token) {
  * valid=true returns { id, username, first_name } from getMe.
  * Used by the wizard to validate before saving.
  */
-router.post('/test-bot-token', async (req, res) => {
+router.post('/test-bot-token', testTokenLimit, async (req, res) => {
   const { token } = req.body || {};
   if (!token) return res.status(400).json({ success: false, message: 'token is required.' });
   const bot = await telegramGetMe(token);
@@ -115,8 +125,9 @@ router.post('/gyms', async (req, res) => {
   if (RESERVED_SLUGS.has(slug)) {
     return res.status(400).json({ success: false, message: `slug '${slug}' is reserved.` });
   }
-  if (admin_password.length < 6) {
-    return res.status(400).json({ success: false, message: 'Admin password must be at least 6 characters.' });
+  const pwdErr = validatePassword(admin_password);
+  if (pwdErr) {
+    return res.status(400).json({ success: false, message: pwdErr });
   }
 
   // If a bot token was given, validate against Telegram and auto-fill username
