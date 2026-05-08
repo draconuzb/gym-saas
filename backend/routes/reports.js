@@ -14,8 +14,14 @@ router.get('/summary', async (req, res) => {
           db.query('SELECT COUNT(*) AS total FROM members'),
           db.query(`SELECT COUNT(*) AS total FROM subscriptions
                     WHERE status = 'active' AND (visit_quota IS NULL OR (total_days - days_used) > 0)`),
-          db.query(`SELECT COALESCE(SUM(amount), 0) AS total FROM payments
-                    WHERE status = 'completed' AND created_at >= date_trunc('month', CURRENT_DATE)`),
+          // Monthly revenue = subscription/cash payments + daily walk-in visits.
+          db.query(`SELECT
+                      (SELECT COALESCE(SUM(amount), 0) FROM payments
+                         WHERE status = 'completed'
+                           AND created_at >= date_trunc('month', CURRENT_DATE))
+                    + (SELECT COALESCE(SUM(amount), 0) FROM daily_visits
+                         WHERE visited_at >= date_trunc('month', CURRENT_DATE))
+                    AS total`),
           db.query(`SELECT COUNT(*) AS total FROM members WHERE created_at >= date_trunc('month', CURRENT_DATE)`),
           db.query(`SELECT COUNT(*) AS total FROM checkins WHERE checked_in_at::date = CURRENT_DATE`),
           db.query(`SELECT COUNT(*) AS total FROM subscriptions
@@ -41,17 +47,24 @@ router.get('/summary', async (req, res) => {
   }
 });
 
-// GET monthly revenue (last 6 months)
+// GET monthly revenue (last 6 months) — payments + daily visits combined
 router.get('/revenue', async (req, res) => {
   try {
     const data = await withGym(req.gymId, async (db) => {
       const r = await db.query(`
-        SELECT to_char(date_trunc('month', created_at), 'Mon') AS month,
-          COALESCE(SUM(amount), 0) AS revenue
-        FROM payments
-        WHERE status = 'completed' AND created_at >= NOW() - INTERVAL '6 months'
-        GROUP BY date_trunc('month', created_at)
-        ORDER BY date_trunc('month', created_at)
+        WITH combined AS (
+          SELECT date_trunc('month', created_at) AS m, amount
+          FROM payments
+          WHERE status = 'completed' AND created_at >= NOW() - INTERVAL '6 months'
+          UNION ALL
+          SELECT date_trunc('month', visited_at) AS m, amount
+          FROM daily_visits
+          WHERE visited_at >= NOW() - INTERVAL '6 months'
+        )
+        SELECT to_char(m, 'Mon') AS month, COALESCE(SUM(amount), 0) AS revenue
+        FROM combined
+        GROUP BY m
+        ORDER BY m
       `);
       return r.rows;
     });

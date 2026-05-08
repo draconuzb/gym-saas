@@ -5,6 +5,7 @@ const QRCode = require('qrcode');
 const { query, withGym } = require('../db/db');
 const { authenticate, authorize, requireGym } = require('../middleware/auth');
 const { makeQrToken, safeCompare } = require('../lib/qr');
+const { normalizePhone } = require('../lib/phone');
 
 // ─── Telegram-mini-app endpoints (no JWT) ─────────────────────
 // These use the gym's qr_hmac_secret to validate an x-telegram-hash header.
@@ -188,7 +189,8 @@ router.get('/:id', async (req, res) => {
 
 // POST register a new member (optionally with a starter subscription)
 router.post('/register', async (req, res) => {
-  const { firstName, lastName, phone, planId, remainingDays } = req.body;
+  const { firstName, lastName, planId, remainingDays, birthDate } = req.body;
+  const phone = normalizePhone(req.body.phone);
   if (!firstName || !phone) {
     return res.status(400).json({ success: false, message: 'firstName and phone are required.' });
   }
@@ -207,9 +209,9 @@ router.post('/register', async (req, res) => {
       }
 
       const result = await db.query(
-        `INSERT INTO members (gym_id, first_name, last_name, phone, plan_id)
-         VALUES (current_gym_id(), $1, $2, $3, $4) RETURNING *`,
-        [firstName, lastName || null, phone, validPlanId]
+        `INSERT INTO members (gym_id, first_name, last_name, phone, plan_id, birth_date)
+         VALUES (current_gym_id(), $1, $2, $3, $4, $5) RETURNING *`,
+        [firstName, lastName || null, phone, validPlanId, birthDate || null]
       );
       const member = result.rows[0];
 
@@ -256,7 +258,8 @@ router.put('/:id', authorize('admin', 'super_admin'), async (req, res) => {
   if (!Number.isInteger(memberId) || memberId <= 0) {
     return res.status(400).json({ success: false, message: 'Invalid member id.' });
   }
-  const { firstName, lastName, phone, isActive } = req.body;
+  const { firstName, lastName, isActive, birthDate } = req.body;
+  const phone = normalizePhone(req.body.phone);
   try {
     const out = await withGym(req.gymId, async (db) => {
       const existing = await db.query('SELECT * FROM members WHERE id = $1', [memberId]);
@@ -268,13 +271,14 @@ router.put('/:id', authorize('admin', 'super_admin'), async (req, res) => {
         if (phoneCheck.rows.length > 0) return { conflict: true };
       }
       const r = await db.query(
-        `UPDATE members SET first_name = $1, last_name = $2, phone = $3, is_active = $4
-         WHERE id = $5 RETURNING *`,
+        `UPDATE members SET first_name = $1, last_name = $2, phone = $3, is_active = $4, birth_date = $5
+         WHERE id = $6 RETURNING *`,
         [
           firstName ?? m.first_name,
           lastName ?? m.last_name,
           newPhone,
           isActive !== undefined ? isActive : m.is_active,
+          birthDate !== undefined ? birthDate : m.birth_date,
           memberId,
         ]
       );

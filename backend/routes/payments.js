@@ -188,7 +188,22 @@ router.post('/cash', authorize('admin', 'super_admin'), async (req, res) => {
     return res.status(400).json({ success: false, message: 'memberId and amount are required.' });
   }
   try {
-    const data = await withGym(req.gymId, async (db) => {
+    const out = await withGym(req.gymId, async (db) => {
+      // When tied to a subscription, only allow it if the sub is still pending.
+      // /members/:id/subscribe already records a completed cash payment, so a
+      // second /cash call against an active sub would double-count revenue.
+      if (subscriptionId) {
+        const subRow = await db.query(
+          'SELECT id, status, plan_id FROM subscriptions WHERE id = $1',
+          [subscriptionId]
+        );
+        if (subRow.rows.length === 0) {
+          return { status: 404, msg: 'Subscription not found.' };
+        }
+        if (subRow.rows[0].status !== 'pending') {
+          return { status: 409, msg: 'Subscription is already paid; record extra cash without subscriptionId.' };
+        }
+      }
       const payResult = await db.query(
         `INSERT INTO payments (gym_id, member_id, subscription_id, amount, gateway, status, processed_at)
          VALUES (current_gym_id(), $1, $2, $3, 'cash', 'completed', NOW())
@@ -207,9 +222,10 @@ router.post('/cash', authorize('admin', 'super_admin'), async (req, res) => {
           await db.query('UPDATE members SET plan_id = $1 WHERE id = $2', [sub.rows[0].plan_id, memberId]);
         }
       }
-      return payResult.rows[0];
+      return { data: payResult.rows[0] };
     });
-    res.status(201).json({ success: true, data });
+    if (out.status) return res.status(out.status).json({ success: false, message: out.msg });
+    res.status(201).json({ success: true, data: out.data });
   } catch (err) {
     console.error('[Payments] Cash error:', err.message);
     res.status(500).json({ success: false, message: 'Internal server error.' });

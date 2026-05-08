@@ -5,6 +5,7 @@ const crypto = require('crypto');
 const { query, withGym } = require('../db/db');
 const { authenticate, authorize } = require('../middleware/auth');
 const { clientIp, rateLimiter, validatePassword } = require('../lib/security');
+const { normalizePhone } = require('../lib/phone');
 
 // All endpoints in this file require super_admin
 router.use(authenticate, authorize('super_admin'));
@@ -105,10 +106,12 @@ router.get('/gyms', async (req, res) => {
  */
 router.post('/gyms', async (req, res) => {
   const {
-    slug, name, phone, address, timezone, plan,
-    admin_phone, admin_password, admin_first_name, admin_last_name,
+    slug, name, address, timezone, plan,
+    admin_password, admin_first_name, admin_last_name,
     telegram_bot_token, telegram_bot_username,
   } = req.body;
+  const phone = normalizePhone(req.body.phone);
+  const admin_phone = normalizePhone(req.body.admin_phone);
 
   if (!slug || !name || !admin_phone || !admin_password || !admin_first_name) {
     return res.status(400).json({
@@ -261,6 +264,7 @@ router.patch('/gyms/:id', async (req, res) => {
   for (const key of allowed) {
     if (key in req.body) updates[key] = req.body[key];
   }
+  if ('phone' in updates) updates.phone = normalizePhone(updates.phone);
   if (Object.keys(updates).length === 0) {
     return res.status(400).json({ success: false, message: 'No valid fields to update.' });
   }

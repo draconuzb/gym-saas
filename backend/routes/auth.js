@@ -4,6 +4,7 @@ const bcrypt = require('bcrypt');
 const { query, withGym } = require('../db/db');
 const { signToken, signRefreshToken, verifyRefreshToken, authenticate } = require('../middleware/auth');
 const { clientIp, rateLimiter, accountLockout, redact, validatePassword } = require('../lib/security');
+const { normalizePhone } = require('../lib/phone');
 
 // Two layers of brute-force protection:
 //   1. Per-IP rate limit — blocks scripted scanning from a single source
@@ -28,7 +29,8 @@ const loginLockout = accountLockout({
  *   the same phone is registered in multiple gyms
  */
 router.post('/login', loginIpLimit, async (req, res) => {
-  const { phone, password, gym_slug } = req.body;
+  const { password, gym_slug } = req.body;
+  const phone = normalizePhone(req.body.phone);
 
   if (!phone || !password) {
     return res.status(400).json({ success: false, message: 'Phone and password are required.' });
@@ -138,7 +140,7 @@ router.post('/login', loginIpLimit, async (req, res) => {
  * never reveals whether the password is correct.
  */
 router.get('/gyms-by-phone', async (req, res) => {
-  const { phone } = req.query;
+  const phone = normalizePhone(req.query.phone);
   if (!phone) return res.json({ success: true, gyms: [], has_super_admin: false });
 
   try {

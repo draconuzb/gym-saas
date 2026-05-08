@@ -62,10 +62,15 @@ router.get('/:id', async (req, res) => {
 });
 
 // POST create class — admin only
+const VALID_DAYS = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
+
 router.post('/', authorize('admin', 'super_admin'), async (req, res) => {
   const { name, trainerId, dayOfWeek, startTime, capacity } = req.body;
   if (!name || !trainerId || !dayOfWeek || !startTime) {
     return res.status(400).json({ success: false, message: 'name, trainerId, dayOfWeek, startTime are required.' });
+  }
+  if (!VALID_DAYS.includes(dayOfWeek)) {
+    return res.status(400).json({ success: false, message: `dayOfWeek must be one of: ${VALID_DAYS.join(', ')}.` });
   }
   try {
     const row = await withGym(req.gymId, async (db) => {
