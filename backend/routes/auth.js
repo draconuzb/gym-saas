@@ -217,6 +217,69 @@ router.post('/change-password', authenticate, async (req, res) => {
 });
 
 /**
+ * GET  /api/auth/profile  — current user info
+ * PATCH /api/auth/profile — self-edit phone/firstName/lastName
+ */
+router.get('/profile', authenticate, async (req, res) => {
+  try {
+    const lookup = req.user.gym_id == null
+      ? () => query('SELECT id, phone, role, first_name, last_name, gym_id FROM users WHERE id = $1', [req.user.id])
+      : () => withGym(req.user.gym_id, async (db) =>
+          db.query('SELECT id, phone, role, first_name, last_name, gym_id FROM users WHERE id = $1', [req.user.id]));
+    const r = await lookup();
+    if (r.rows.length === 0) return res.status(404).json({ success: false, message: 'User not found.' });
+    res.json({ success: true, user: r.rows[0] });
+  } catch (err) {
+    console.error('[Auth] Get profile error:', err.message);
+    res.status(500).json({ success: false, message: 'Internal server error.' });
+  }
+});
+
+router.patch('/profile', authenticate, async (req, res) => {
+  const updates = {};
+  if ('phone' in req.body) updates.phone = normalizePhone(req.body.phone);
+  if ('firstName' in req.body) updates.first_name = req.body.firstName;
+  if ('lastName' in req.body) updates.last_name = req.body.lastName;
+  if (Object.keys(updates).length === 0) {
+    return res.status(400).json({ success: false, message: 'No fields to update (phone, firstName, lastName).' });
+  }
+  if (updates.phone === '') {
+    return res.status(400).json({ success: false, message: 'Phone cannot be empty.' });
+  }
+  try {
+    const run = async (db) => {
+      if (updates.phone) {
+        // Phone unique per gym (or globally, for super_admin).
+        const dupQuery = req.user.gym_id == null
+          ? `SELECT id FROM users WHERE phone = $1 AND gym_id IS NULL AND id != $2`
+          : `SELECT id FROM users WHERE phone = $1 AND gym_id = $2 AND id != $3`;
+        const dupArgs = req.user.gym_id == null
+          ? [updates.phone, req.user.id]
+          : [updates.phone, req.user.gym_id, req.user.id];
+        const dup = await db.query(dupQuery, dupArgs);
+        if (dup.rows.length > 0) return { conflict: true };
+      }
+      const fields = Object.keys(updates).map((k, i) => `${k} = $${i + 1}`);
+      const values = [...Object.values(updates), req.user.id];
+      const r = await db.query(
+        `UPDATE users SET ${fields.join(', ')} WHERE id = $${values.length}
+         RETURNING id, phone, role, first_name, last_name, gym_id`,
+        values
+      );
+      return { user: r.rows[0] };
+    };
+    const out = req.user.gym_id == null
+      ? await run({ query })
+      : await withGym(req.user.gym_id, run);
+    if (out.conflict) return res.status(409).json({ success: false, message: 'This phone is already used by another user.' });
+    res.json({ success: true, user: out.user });
+  } catch (err) {
+    console.error('[Auth] Patch profile error:', err.message);
+    res.status(500).json({ success: false, message: 'Internal server error.' });
+  }
+});
+
+/**
  * POST /api/auth/refresh
  */
 router.post('/refresh', async (req, res) => {

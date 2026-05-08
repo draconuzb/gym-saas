@@ -133,9 +133,21 @@ router.post('/gyms', async (req, res) => {
     return res.status(400).json({ success: false, message: pwdErr });
   }
 
-  // If a bot token was given, validate against Telegram and auto-fill username
+  // If a bot token was given, validate against Telegram and auto-fill username.
+  // Also reject if another gym already uses this token — Telegram allows only
+  // one polling session per bot, so two gyms sharing a token break each other.
   let resolvedBotUsername = telegram_bot_username || null;
   if (telegram_bot_token) {
+    const dup = await query(
+      'SELECT id, slug FROM gyms WHERE telegram_bot_token = $1 LIMIT 1',
+      [telegram_bot_token]
+    );
+    if (dup.rows.length > 0) {
+      return res.status(409).json({
+        success: false,
+        message: `Bu bot tokenidan boshqa gym (slug='${dup.rows[0].slug}') foydalanmoqda.`,
+      });
+    }
     const bot = await telegramGetMe(telegram_bot_token);
     if (!bot) {
       return res.status(400).json({
@@ -269,8 +281,23 @@ router.patch('/gyms/:id', async (req, res) => {
     return res.status(400).json({ success: false, message: 'No valid fields to update.' });
   }
 
-  // If the bot token is being changed, validate it and auto-fill username.
-  if (updates.telegram_bot_token !== undefined && updates.telegram_bot_token !== null && updates.telegram_bot_token !== '') {
+  // If the bot token is being changed, validate it, ensure no other gym
+  // already owns it, and auto-fill username. Empty string is treated as
+  // "clear the token" — converted to NULL so the IS NOT NULL flag flips.
+  if (updates.telegram_bot_token === '') {
+    updates.telegram_bot_token = null;
+    if (!('telegram_bot_username' in updates)) updates.telegram_bot_username = null;
+  } else if (updates.telegram_bot_token !== undefined && updates.telegram_bot_token !== null) {
+    const dup = await query(
+      'SELECT id, slug FROM gyms WHERE telegram_bot_token = $1 AND id != $2 LIMIT 1',
+      [updates.telegram_bot_token, id]
+    );
+    if (dup.rows.length > 0) {
+      return res.status(409).json({
+        success: false,
+        message: `Bu bot tokenidan boshqa gym (slug='${dup.rows[0].slug}') foydalanmoqda.`,
+      });
+    }
     const bot = await telegramGetMe(updates.telegram_bot_token);
     if (!bot) {
       return res.status(400).json({
@@ -355,6 +382,89 @@ router.post('/gyms/:id/rotate-secrets', async (req, res) => {
     res.json({ success: true, gym: result.rows[0] });
   } catch (err) {
     console.error('[Super] Rotate secrets error:', err.message);
+    res.status(500).json({ success: false, message: 'Internal server error.' });
+  }
+});
+
+/**
+ * GET  /api/super/gyms/:id/users
+ * PATCH /api/super/gyms/:gymId/users/:userId
+ * Super-admin edits a tenant user's phone/name and optionally resets their
+ * password. Needed because there is no other way to recover an admin who
+ * loses access to their phone or forgets their password.
+ */
+router.get('/gyms/:id/users', async (req, res) => {
+  const id = parseInt(req.params.id, 10);
+  if (!Number.isInteger(id) || id <= 0) {
+    return res.status(400).json({ success: false, message: 'Invalid gym id.' });
+  }
+  try {
+    const r = await require('../db/db').withGym(id, async (db) =>
+      db.query(
+        `SELECT id, phone, role, first_name, last_name, created_at
+         FROM users WHERE gym_id = $1 ORDER BY id`,
+        [id]
+      )
+    );
+    res.json({ success: true, users: r.rows });
+  } catch (err) {
+    console.error('[Super] List gym users error:', err.message);
+    res.status(500).json({ success: false, message: 'Internal server error.' });
+  }
+});
+
+router.patch('/gyms/:gymId/users/:userId', async (req, res) => {
+  const gymId = parseInt(req.params.gymId, 10);
+  const userId = parseInt(req.params.userId, 10);
+  if (!Number.isInteger(gymId) || gymId <= 0 || !Number.isInteger(userId) || userId <= 0) {
+    return res.status(400).json({ success: false, message: 'Invalid gym or user id.' });
+  }
+
+  const updates = {};
+  if ('phone' in req.body) updates.phone = normalizePhone(req.body.phone);
+  if ('firstName' in req.body) updates.first_name = req.body.firstName;
+  if ('lastName' in req.body) updates.last_name = req.body.lastName;
+  let newHash = null;
+  if (req.body.password) {
+    const pwdErr = validatePassword(req.body.password);
+    if (pwdErr) return res.status(400).json({ success: false, message: pwdErr });
+    newHash = await bcrypt.hash(req.body.password, 12);
+    updates.password_hash = newHash;
+  }
+  if (Object.keys(updates).length === 0) {
+    return res.status(400).json({ success: false, message: 'No fields to update (phone, firstName, lastName, password).' });
+  }
+
+  try {
+    const out = await require('../db/db').withGym(gymId, async (db) => {
+      const exists = await db.query(
+        `SELECT id, phone FROM users WHERE id = $1 AND gym_id = $2`,
+        [userId, gymId]
+      );
+      if (exists.rows.length === 0) return { notFound: true };
+      // Phone is unique per gym; reject collisions early so we get a
+      // meaningful 409 instead of a 500 from the unique index.
+      if (updates.phone && updates.phone !== exists.rows[0].phone) {
+        const dup = await db.query(
+          `SELECT id FROM users WHERE gym_id = $1 AND phone = $2 AND id != $3`,
+          [gymId, updates.phone, userId]
+        );
+        if (dup.rows.length > 0) return { conflict: true };
+      }
+      const fields = Object.keys(updates).map((k, i) => `${k} = $${i + 1}`);
+      const values = [...Object.values(updates), userId];
+      const r = await db.query(
+        `UPDATE users SET ${fields.join(', ')} WHERE id = $${values.length}
+         RETURNING id, phone, role, first_name, last_name`,
+        values
+      );
+      return { user: r.rows[0] };
+    });
+    if (out.notFound) return res.status(404).json({ success: false, message: 'User not found in this gym.' });
+    if (out.conflict) return res.status(409).json({ success: false, message: 'Another user in this gym already has this phone.' });
+    res.json({ success: true, user: out.user, password_reset: !!newHash });
+  } catch (err) {
+    console.error('[Super] Patch gym user error:', err.message);
     res.status(500).json({ success: false, message: 'Internal server error.' });
   }
 });
