@@ -228,7 +228,18 @@ router.get('/profile', authenticate, async (req, res) => {
           db.query('SELECT id, phone, role, first_name, last_name, gym_id FROM users WHERE id = $1', [req.user.id]));
     const r = await lookup();
     if (r.rows.length === 0) return res.status(404).json({ success: false, message: 'User not found.' });
-    res.json({ success: true, user: r.rows[0] });
+    // Effective gym: tenant users get their own gym; super-admin who attached
+    // X-Gym-Id (i.e. "entered" a gym) gets that one. Used by tenant pages
+    // (e.g. /qrcodes) to build bot-specific URLs without a second round trip.
+    let gym = null;
+    if (req.gymId != null) {
+      const g = await query(
+        'SELECT id, slug, name, telegram_bot_username FROM gyms WHERE id = $1',
+        [req.gymId]
+      );
+      gym = g.rows[0] || null;
+    }
+    res.json({ success: true, user: r.rows[0], gym });
   } catch (err) {
     console.error('[Auth] Get profile error:', err.message);
     res.status(500).json({ success: false, message: 'Internal server error.' });

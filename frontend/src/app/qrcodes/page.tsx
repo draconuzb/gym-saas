@@ -1,16 +1,35 @@
 "use client";
 
+import { useEffect, useState } from "react";
 import { useAuth } from "@/hooks/useAuth";
 import { useLocale } from "@/hooks/useLocale";
 
-const BOT_USERNAME = process.env.NEXT_PUBLIC_BOT_USERNAME || "Oson_gym_bot";
+const API = process.env.NEXT_PUBLIC_API_URL || "";
 
 export default function QRCodes() {
-  const { loading } = useAuth();
+  const { loading, fetchWithAuth } = useAuth();
   const { t } = useLocale();
+  const [botUsername, setBotUsername] = useState<string | null>(null);
+  const [gymName, setGymName] = useState<string>("");
+  const [fetchErr, setFetchErr] = useState("");
 
-  const registrationUrl = `https://t.me/${BOT_USERNAME}?start=register`;
-  const checkinUrl = `https://t.me/${BOT_USERNAME}?start=checkin`;
+  useEffect(() => {
+    if (loading) return;
+    fetchWithAuth(`${API}/api/auth/profile`)
+      .then(r => r.json())
+      .then(d => {
+        if (d.success && d.gym) {
+          setBotUsername(d.gym.telegram_bot_username || null);
+          setGymName(d.gym.name || "");
+        } else if (!d.gym) {
+          setFetchErr("Faol zal aniqlanmadi. Avval zalga kiring.");
+        }
+      })
+      .catch(e => setFetchErr(e.message || "Profilni o'qib bo'lmadi"));
+  }, [loading]);
+
+  const registrationUrl = botUsername ? `https://t.me/${botUsername}?start=register` : "";
+  const checkinUrl = botUsername ? `https://t.me/${botUsername}?start=checkin` : "";
   const qrApiBase = `https://api.qrserver.com/v1/create-qr-code/?size=400x400&data=`;
 
   // TODO: Replace external QR API (api.qrserver.com) with client-side generation
@@ -31,9 +50,29 @@ export default function QRCodes() {
 
   if (loading) return <div style={{ padding: "3rem", color: "var(--text-muted)" }}>{t("common.loading")}</div>;
 
+  if (fetchErr) {
+    return <div style={{ padding: "2rem" }}>
+      <div className="glass-card" style={{ padding: "1.5rem", color: "#ff6b6b" }}>{fetchErr}</div>
+    </div>;
+  }
+
+  if (!botUsername) {
+    return <div style={{ padding: "2rem" }}>
+      <div className="glass-card" style={{ padding: "1.5rem" }}>
+        <h2 style={{ marginBottom: "0.5rem" }}>Bot ulanmagan</h2>
+        <p style={{ color: "var(--text-muted)" }}>
+          Bu zalga hali Telegram bot ulanmagan. Super admin paneldan zal sozlamalarini oching va bot tokenini qo'shing — keyin shu sahifada QR kodlar paydo bo'ladi.
+        </p>
+      </div>
+    </div>;
+  }
+
   return (
     <>
-      <header className="header"><h1>{t("qrcodes.title")}</h1></header>
+      <header className="header">
+        <h1>{t("qrcodes.title")}</h1>
+        {gymName && <p style={{ color: "var(--text-muted)", marginTop: "0.3rem" }}>{gymName} · @{botUsername}</p>}
+      </header>
       <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(350px, 1fr))", gap: "2rem" }}>
         <div className="glass-card" style={{ textAlign: "center", padding: "2rem" }}>
           <div style={{ fontSize: "3rem", marginBottom: "1rem" }}>📱</div>
