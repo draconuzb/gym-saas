@@ -118,13 +118,16 @@ async function getPlans(gymId) {
 
 // ─── Keyboards / Texts ────────────────────────────────────────
 
+const SCAN_URL = (process.env.PUBLIC_BASE_URL || 'https://gym.bizdaoson.uz').replace(/\/+$/, '') + '/scan-checkin.html';
+
 async function mainMenuKeyboard(gymId, telegramId) {
   const s = await t(gymId, telegramId);
-  // Entry-code and QR-pass buttons are intentionally hidden from the keyboard
-  // — the partner gym's bot (the design we're matching) only exposes the 6
-  // primary actions. The hearsAll handlers stay registered so deep links
-  // and language-switched text still work for anyone who has them.
+  // Top row: Web App QR scanner — opens the in-Telegram camera so members
+  // can check in by scanning the wall-poster QR without leaving the bot.
+  // hearsAll handlers for Code/Qr stay registered for backward compatibility,
+  // they just no longer have keyboard buttons.
   return Markup.keyboard([
+    [Markup.button.webApp(s.menuScan, SCAN_URL)],
     [s.menuAccount, s.menuHistory],
     [s.menuBuy, s.menuContact],
     [s.menuRefresh, s.menuLang],
@@ -196,6 +199,33 @@ function createBotForGym(gym) {
     ctx.state.member = member;
     ctx.state.sub = await withGym(gymId, (db) => getActiveSub(db, member.id)).catch(() => null);
     return next();
+  });
+
+  // ─── 📸 QR scanner Web App data ─────────────────────────────
+  // Member taps the "menuScan" Web App button → in-Telegram camera page →
+  // jsQR decodes the wall poster → tg.sendData() → arrives here as a
+  // message with `web_app_data`. Only accept if the QR points at this
+  // gym's bot (so a member can't scan a neighbouring gym's QR).
+  bot.on('message', async (ctx, next) => {
+    const wad = ctx.message && ctx.message.web_app_data;
+    if (!wad) return next();
+    const s = await t(gymId, ctx.from.id);
+    const data = String(wad.data || '');
+
+    // Wall poster encodes the bot's deep-link URL: t.me/<bot>?start=checkin
+    const m = data.match(/t\.me\/([A-Za-z0-9_]+)\??start=checkin/i)
+           || data.match(/t\.me\/([A-Za-z0-9_]+)\?start=checkin/i);
+    if (!m) {
+      return ctx.reply(s.scanInvalid);
+    }
+    const scannedUser = m[1].toLowerCase();
+    const expectedUser = (gym.telegram_bot_username || '').toLowerCase();
+    if (expectedUser && scannedUser !== expectedUser) {
+      return ctx.reply(s.scanWrongGym(m[1], gym.telegram_bot_username));
+    }
+
+    const member = await withGym(gymId, (db) => getMember(db, ctx.from.id)).catch(() => null);
+    return autoCheckin(ctx, member, s, gymId);
   });
 
   // ─── /start ───────────────────────────────────────────────────

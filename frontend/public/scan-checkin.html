@@ -1,0 +1,116 @@
+<!DOCTYPE html>
+<html lang="uz">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+  <title>QR Skaner</title>
+  <script src="https://telegram.org/js/telegram-web-app.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/jsqr@1.4.0/dist/jsQR.js"></script>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; }
+    html, body { height: 100%; background: #000; color: #fff; overflow: hidden; }
+    body { display: flex; flex-direction: column; }
+    .stage { flex: 1; position: relative; overflow: hidden; }
+    video { width: 100%; height: 100%; object-fit: cover; }
+    canvas { display: none; }
+    .frame {
+      position: absolute; inset: 0; pointer-events: none;
+      display: flex; align-items: center; justify-content: center;
+    }
+    .frame::before {
+      content: ''; width: 70vw; height: 70vw; max-width: 320px; max-height: 320px;
+      border: 3px solid rgba(0, 242, 254, 0.85);
+      border-radius: 24px;
+      box-shadow: 0 0 0 9999px rgba(0,0,0,0.55);
+    }
+    .status {
+      position: absolute; left: 16px; right: 16px; bottom: 24px;
+      padding: 14px 18px; border-radius: 14px;
+      background: rgba(20, 22, 30, 0.85);
+      backdrop-filter: blur(10px); -webkit-backdrop-filter: blur(10px);
+      font-size: 0.95rem; text-align: center;
+      border: 1px solid rgba(255,255,255,0.08);
+    }
+    .status.err { color: #ff6b6b; border-color: rgba(255, 107, 107, 0.35); }
+    .status.ok { color: #00f2fe; border-color: rgba(0, 242, 254, 0.35); }
+    .hint {
+      position: absolute; left: 16px; right: 16px; top: 16px;
+      text-align: center; font-size: 0.85rem; color: rgba(255,255,255,0.7);
+      text-shadow: 0 1px 4px rgba(0,0,0,0.6);
+    }
+  </style>
+</head>
+<body>
+  <div class="stage">
+    <video id="v" playsinline autoplay muted></video>
+    <canvas id="c"></canvas>
+    <div class="frame"></div>
+    <div class="hint">Devordagi QR ni ramka ichiga to'g'rilang</div>
+    <div id="s" class="status">📷 Kameraga ruxsat berib QR ga to'g'rilang…</div>
+  </div>
+
+  <script>
+    const tg = window.Telegram && window.Telegram.WebApp;
+    if (tg) { tg.ready(); tg.expand(); tg.setBackgroundColor && tg.setBackgroundColor('#000000'); }
+
+    const v = document.getElementById('v');
+    const c = document.getElementById('c');
+    const ctx = c.getContext('2d', { willReadFrequently: true });
+    const s = document.getElementById('s');
+    let stream = null;
+    let stopped = false;
+
+    function setStatus(text, kind) {
+      s.textContent = text;
+      s.className = 'status' + (kind ? ' ' + kind : '');
+    }
+
+    async function start() {
+      try {
+        stream = await navigator.mediaDevices.getUserMedia({
+          video: { facingMode: { ideal: 'environment' }, width: { ideal: 1280 }, height: { ideal: 720 } },
+          audio: false,
+        });
+        v.srcObject = stream;
+        await v.play();
+        setStatus('🔍 QR qidirilmoqda…');
+        requestAnimationFrame(loop);
+      } catch (e) {
+        setStatus('❌ Kamera ochilmadi: ' + (e && (e.message || e.name)), 'err');
+      }
+    }
+
+    function loop() {
+      if (stopped) return;
+      if (v.readyState === v.HAVE_ENOUGH_DATA) {
+        const w = v.videoWidth, h = v.videoHeight;
+        if (w && h) {
+          c.width = w; c.height = h;
+          ctx.drawImage(v, 0, 0, w, h);
+          const img = ctx.getImageData(0, 0, w, h);
+          const code = jsQR(img.data, w, h, { inversionAttempts: 'dontInvert' });
+          if (code && code.data) {
+            stopped = true;
+            stream && stream.getTracks().forEach(t => t.stop());
+            setStatus('✅ QR topildi, yuborilmoqda…', 'ok');
+            try {
+              if (tg && tg.sendData) {
+                tg.sendData(code.data);
+                setTimeout(() => tg.close(), 400);
+              } else {
+                setStatus('Telegram WebApp aniqlanmadi.', 'err');
+              }
+            } catch (err) {
+              setStatus('Yuborib bo’lmadi: ' + err.message, 'err');
+            }
+            return;
+          }
+        }
+      }
+      requestAnimationFrame(loop);
+    }
+
+    start();
+  </script>
+</body>
+</html>
