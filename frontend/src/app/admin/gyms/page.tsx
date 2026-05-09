@@ -27,6 +27,7 @@ export default function AdminGymsPage() {
   const [gyms, setGyms] = useState<Gym[]>([]);
   const [error, setError] = useState("");
   const [showWizard, setShowWizard] = useState(false);
+  const [editGymId, setEditGymId] = useState<number | null>(null);
 
   useEffect(() => {
     if (loading) return;
@@ -120,6 +121,14 @@ export default function AdminGymsPage() {
         />
       )}
 
+      {editGymId !== null && (
+        <EditGymModal
+          gymId={editGymId}
+          fetchWithAuth={fetchWithAuth}
+          onClose={() => { setEditGymId(null); refresh(); }}
+        />
+      )}
+
       <div className="glass-card" style={{ padding: 0, overflow: "hidden" }}>
         <table style={{ width: "100%", borderCollapse: "collapse" }}>
           <thead>
@@ -155,7 +164,15 @@ export default function AdminGymsPage() {
                 <td style={{ ...td, fontSize: "0.85rem" }}>
                   <BotBadge gym={gym} onReload={() => reloadBot(gym)} />
                 </td>
-                <td style={td}>
+                <td style={{ ...td, whiteSpace: "nowrap" }}>
+                  <button onClick={() => setEditGymId(gym.id)} style={{
+                    padding: "0.4rem 0.8rem", fontSize: "0.85rem",
+                    background: "transparent", border: "1px solid var(--border-glass)",
+                    borderRadius: 8, color: "var(--text-muted)", cursor: "pointer",
+                    marginRight: "0.4rem",
+                  }}>
+                    ✎ Tahrirlash
+                  </button>
                   <button onClick={() => enterGym(gym)} className="btn-primary" style={{ padding: "0.4rem 0.9rem", fontSize: "0.85rem" }}>
                     Kirish →
                   </button>
@@ -239,6 +256,374 @@ function BotBadge({ gym, onReload }: { gym: Gym; onReload: () => void }) {
         cursor: "pointer", padding: "0 0.3rem", fontSize: "0.9rem",
       }}>↻</button>
     </span>
+  );
+}
+
+// ============================================================
+// Edit Gym modal — info, bot token, admins
+// ============================================================
+
+type GymDetail = {
+  id: number; slug: string; name: string;
+  phone: string | null; address: string | null;
+  timezone: string | null; plan: string;
+  is_active: boolean;
+  telegram_bot_username: string | null;
+};
+type GymUser = {
+  id: number; phone: string; role: string;
+  first_name: string; last_name: string | null;
+};
+
+function EditGymModal({ gymId, fetchWithAuth, onClose }: {
+  gymId: number;
+  fetchWithAuth: (url: string, opts?: RequestInit) => Promise<Response>;
+  onClose: () => void;
+}) {
+  const [gym, setGym] = useState<GymDetail | null>(null);
+  const [users, setUsers] = useState<GymUser[]>([]);
+  const [hasBotToken, setHasBotToken] = useState(false);
+  const [botRunning, setBotRunning] = useState(false);
+  const [loadErr, setLoadErr] = useState("");
+
+  // Info section state
+  const [info, setInfo] = useState({ name: "", phone: "", address: "", timezone: "Asia/Tashkent", plan: "standard", is_active: true });
+  const [savingInfo, setSavingInfo] = useState(false);
+  const [infoMsg, setInfoMsg] = useState<{ type: "ok" | "err"; text: string } | null>(null);
+
+  // Bot section state
+  const [tokenInput, setTokenInput] = useState("");
+  const [tokenCheck, setTokenCheck] = useState<{ checking: boolean; valid: boolean | null; bot?: { username: string; first_name: string }; msg?: string }>({ checking: false, valid: null });
+  const [savingBot, setSavingBot] = useState(false);
+  const [botMsg, setBotMsg] = useState<{ type: "ok" | "err"; text: string } | null>(null);
+
+  // Admin (user) section state — inline edit
+  const [editUserId, setEditUserId] = useState<number | null>(null);
+  const [userForm, setUserForm] = useState({ phone: "", firstName: "", lastName: "", password: "" });
+  const [savingUser, setSavingUser] = useState(false);
+  const [userMsg, setUserMsg] = useState<{ type: "ok" | "err"; text: string } | null>(null);
+
+  const reload = async () => {
+    setLoadErr("");
+    try {
+      const [gRes, uRes, listRes] = await Promise.all([
+        fetchWithAuth(`${API}/api/super/gyms/${gymId}`),
+        fetchWithAuth(`${API}/api/super/gyms/${gymId}/users`),
+        fetchWithAuth(`${API}/api/super/gyms`),
+      ]);
+      const g = await gRes.json();
+      const u = await uRes.json();
+      const list = await listRes.json();
+      if (!g.success) throw new Error(g.message || "Zalni o'qib bo'lmadi");
+      setGym(g.gym);
+      setInfo({
+        name: g.gym.name || "",
+        phone: g.gym.phone || "",
+        address: g.gym.address || "",
+        timezone: g.gym.timezone || "Asia/Tashkent",
+        plan: g.gym.plan || "standard",
+        is_active: !!g.gym.is_active,
+      });
+      if (u.success) setUsers(u.users);
+      if (list.success) {
+        const cur = list.gyms.find((x: any) => x.id === gymId);
+        if (cur) {
+          setHasBotToken(!!cur.has_bot_token);
+          setBotRunning(!!cur.bot_running);
+        }
+      }
+    } catch (e: any) {
+      setLoadErr(e.message || "Zalni o'qib bo'lmadi");
+    }
+  };
+
+  useEffect(() => { reload(); }, [gymId]);
+
+  // ── Info save
+  const saveInfo = async () => {
+    setSavingInfo(true); setInfoMsg(null);
+    try {
+      const res = await fetchWithAuth(`${API}/api/super/gyms/${gymId}`, {
+        method: "PATCH",
+        body: JSON.stringify({
+          name: info.name, phone: info.phone || null, address: info.address || null,
+          timezone: info.timezone, plan: info.plan, is_active: info.is_active,
+        }),
+      });
+      const data = await res.json();
+      if (data.success) setInfoMsg({ type: "ok", text: "Saqlandi." });
+      else setInfoMsg({ type: "err", text: data.message || "Xato." });
+    } catch (e: any) {
+      setInfoMsg({ type: "err", text: e.message || "Xato." });
+    } finally {
+      setSavingInfo(false);
+    }
+  };
+
+  // ── Bot actions
+  const testToken = async () => {
+    if (!tokenInput) return;
+    setTokenCheck({ checking: true, valid: null });
+    try {
+      const res = await fetchWithAuth(`${API}/api/super/test-bot-token`, {
+        method: "POST", body: JSON.stringify({ token: tokenInput }),
+      });
+      const d = await res.json();
+      if (d.success && d.valid) setTokenCheck({ checking: false, valid: true, bot: d.bot });
+      else setTokenCheck({ checking: false, valid: false, msg: d.message || "Token noto'g'ri." });
+    } catch (e: any) {
+      setTokenCheck({ checking: false, valid: false, msg: e.message });
+    }
+  };
+  const saveToken = async () => {
+    setSavingBot(true); setBotMsg(null);
+    try {
+      const res = await fetchWithAuth(`${API}/api/super/gyms/${gymId}`, {
+        method: "PATCH", body: JSON.stringify({ telegram_bot_token: tokenInput }),
+      });
+      const d = await res.json();
+      if (d.success) {
+        setBotMsg({ type: "ok", text: `Token saqlandi. Bot: ${d.bot_reloaded ? "qayta ishga tushdi" : "yuklanmoqda..."}` });
+        setTokenInput(""); setTokenCheck({ checking: false, valid: null });
+        await reload();
+      } else {
+        setBotMsg({ type: "err", text: d.message || "Saqlab bo'lmadi." });
+      }
+    } catch (e: any) {
+      setBotMsg({ type: "err", text: e.message });
+    } finally {
+      setSavingBot(false);
+    }
+  };
+  const clearToken = async () => {
+    if (!confirm("Bot tokenini o'chirmoqchimisiz? Bu zalda Telegram bot ishlamay qoladi.")) return;
+    setSavingBot(true); setBotMsg(null);
+    try {
+      const res = await fetchWithAuth(`${API}/api/super/gyms/${gymId}`, {
+        method: "PATCH", body: JSON.stringify({ telegram_bot_token: "" }),
+      });
+      const d = await res.json();
+      if (d.success) { setBotMsg({ type: "ok", text: "Token olib tashlandi." }); await reload(); }
+      else setBotMsg({ type: "err", text: d.message || "Xato." });
+    } catch (e: any) {
+      setBotMsg({ type: "err", text: e.message });
+    } finally {
+      setSavingBot(false);
+    }
+  };
+  const reloadBot = async () => {
+    setSavingBot(true); setBotMsg(null);
+    try {
+      const res = await fetchWithAuth(`${API}/api/super/gyms/${gymId}/reload-bot`, { method: "POST" });
+      const d = await res.json();
+      if (d.success) { setBotMsg({ type: "ok", text: d.bot_running ? "Bot qayta ishga tushdi." : "Bot yuklanmadi (tokenni tekshiring)." }); await reload(); }
+      else setBotMsg({ type: "err", text: d.message || "Xato." });
+    } catch (e: any) {
+      setBotMsg({ type: "err", text: e.message });
+    } finally {
+      setSavingBot(false);
+    }
+  };
+
+  // ── User edit
+  const startEditUser = (u: GymUser) => {
+    setUserMsg(null);
+    setEditUserId(u.id);
+    setUserForm({ phone: u.phone, firstName: u.first_name, lastName: u.last_name || "", password: "" });
+  };
+  const saveUser = async () => {
+    if (editUserId == null) return;
+    setSavingUser(true); setUserMsg(null);
+    try {
+      const body: any = {
+        phone: userForm.phone,
+        firstName: userForm.firstName,
+        lastName: userForm.lastName,
+      };
+      if (userForm.password) body.password = userForm.password;
+      const res = await fetchWithAuth(`${API}/api/super/gyms/${gymId}/users/${editUserId}`, {
+        method: "PATCH", body: JSON.stringify(body),
+      });
+      const d = await res.json();
+      if (d.success) {
+        setUserMsg({ type: "ok", text: d.password_reset ? "Saqlandi (parol ham yangilandi)." : "Saqlandi." });
+        setEditUserId(null);
+        await reload();
+      } else {
+        setUserMsg({ type: "err", text: d.message || "Xato." });
+      }
+    } catch (e: any) {
+      setUserMsg({ type: "err", text: e.message });
+    } finally {
+      setSavingUser(false);
+    }
+  };
+
+  return (
+    <div style={modalOverlay}>
+      <div className="glass-card" style={{ ...modalCard, maxWidth: 720 }}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "1.2rem" }}>
+          <div>
+            <h2 style={{ fontSize: "1.3rem", marginBottom: "0.2rem" }}>
+              {gym ? gym.name : "Yuklanmoqda..."}
+            </h2>
+            {gym && <p style={{ color: "var(--text-muted)", fontSize: "0.85rem", margin: 0 }}>
+              <code style={{ fontFamily: "monospace" }}>{gym.slug}</code> · ID {gym.id}
+            </p>}
+          </div>
+          <button onClick={onClose} style={btnGhost}>Yopish</button>
+        </div>
+
+        {loadErr && (
+          <div style={{ background: "rgba(255,107,107,0.1)", color: "#ff6b6b", padding: "0.7rem 1rem", borderRadius: 10, marginBottom: "1rem" }}>{loadErr}</div>
+        )}
+
+        {gym && (
+          <>
+            {/* ── INFO ── */}
+            <Section title="Zal ma'lumotlari">
+              {infoMsg && <FlashMsg msg={infoMsg} />}
+              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "0.8rem" }}>
+                <Field label="Nomi"><input style={inputStyle} value={info.name} onChange={e => setInfo({ ...info, name: e.target.value })} /></Field>
+                <Field label="Telefon"><input style={inputStyle} value={info.phone} onChange={e => setInfo({ ...info, phone: e.target.value })} placeholder="+998..." /></Field>
+                <Field label="Manzil" full><input style={inputStyle} value={info.address} onChange={e => setInfo({ ...info, address: e.target.value })} /></Field>
+                <Field label="Timezone"><input style={inputStyle} value={info.timezone} onChange={e => setInfo({ ...info, timezone: e.target.value })} /></Field>
+                <Field label="Tarif">
+                  <select style={{ ...inputStyle, cursor: "pointer" }} value={info.plan} onChange={e => setInfo({ ...info, plan: e.target.value })}>
+                    <option value="trial">Trial</option><option value="standard">Standard</option><option value="premium">Premium</option>
+                  </select>
+                </Field>
+              </div>
+              <label style={{ display: "flex", alignItems: "center", gap: "0.5rem", marginTop: "0.8rem", color: "var(--text-muted)", fontSize: "0.9rem", cursor: "pointer" }}>
+                <input type="checkbox" checked={info.is_active} onChange={e => setInfo({ ...info, is_active: e.target.checked })} />
+                Faol (o'chirilsa, adminlar kira olmaydi)
+              </label>
+              <div style={{ marginTop: "0.8rem" }}>
+                <button onClick={saveInfo} disabled={savingInfo} className="btn-primary" style={{ padding: "0.6rem 1.2rem" }}>
+                  {savingInfo ? "Saqlanmoqda..." : "Saqlash"}
+                </button>
+              </div>
+            </Section>
+
+            {/* ── BOT ── */}
+            <Section title="Telegram bot">
+              {botMsg && <FlashMsg msg={botMsg} />}
+              <div style={{ background: "rgba(255,255,255,0.03)", borderRadius: 10, padding: "0.8rem 1rem", marginBottom: "0.8rem", fontSize: "0.9rem" }}>
+                {hasBotToken ? (
+                  <>
+                    Hozirgi bot:{" "}
+                    {gym.telegram_bot_username
+                      ? <a href={`https://t.me/${gym.telegram_bot_username}`} target="_blank" style={{ color: "var(--accent-primary)" }}>@{gym.telegram_bot_username}</a>
+                      : <span style={{ color: "var(--text-muted)" }}>(username yo'q)</span>}
+                    {" — "}
+                    <span style={{ color: botRunning ? "#22c55e" : "#f59e0b" }}>{botRunning ? "▶ ishlamoqda" : "■ to'xtagan"}</span>
+                  </>
+                ) : (
+                  <span style={{ color: "var(--text-muted)" }}>Bot ulanmagan.</span>
+                )}
+              </div>
+              <Field label="Yangi token (BotFather'dan)" full>
+                <div style={{ display: "flex", gap: "0.4rem" }}>
+                  <input
+                    style={{ ...inputStyle, fontFamily: "monospace", fontSize: "0.85rem" }}
+                    value={tokenInput}
+                    onChange={e => { setTokenInput(e.target.value); setTokenCheck({ checking: false, valid: null }); }}
+                    placeholder="1234567890:ABC..."
+                  />
+                  <button onClick={testToken} disabled={!tokenInput || tokenCheck.checking} style={{
+                    padding: "0.7rem 1rem", background: "rgba(0,242,254,0.1)",
+                    border: "1px solid rgba(0,242,254,0.3)", borderRadius: 10,
+                    color: "var(--accent-primary)", cursor: tokenInput ? "pointer" : "not-allowed", whiteSpace: "nowrap",
+                  }}>
+                    {tokenCheck.checking ? "..." : "🔍 Tekshir"}
+                  </button>
+                </div>
+              </Field>
+              {tokenCheck.valid === true && tokenCheck.bot && (
+                <div style={{ background: "rgba(0,200,100,0.1)", color: "#22c55e", padding: "0.6rem 0.8rem", borderRadius: 8, fontSize: "0.85rem", marginTop: "0.5rem" }}>
+                  ✅ {tokenCheck.bot.first_name} (@{tokenCheck.bot.username})
+                </div>
+              )}
+              {tokenCheck.valid === false && (
+                <div style={{ background: "rgba(255,107,107,0.1)", color: "#ff6b6b", padding: "0.6rem 0.8rem", borderRadius: 8, fontSize: "0.85rem", marginTop: "0.5rem" }}>
+                  ❌ {tokenCheck.msg}
+                </div>
+              )}
+              <div style={{ display: "flex", gap: "0.5rem", marginTop: "0.8rem", flexWrap: "wrap" }}>
+                <button onClick={saveToken} disabled={!tokenInput || !tokenCheck.valid || savingBot} className="btn-primary" style={{ padding: "0.6rem 1.2rem" }}>
+                  {savingBot ? "..." : "Tokenni saqlash"}
+                </button>
+                {hasBotToken && <button onClick={reloadBot} disabled={savingBot} style={btnGhost}>↻ Botni qayta yuklash</button>}
+                {hasBotToken && <button onClick={clearToken} disabled={savingBot} style={{ ...btnGhost, color: "#ef4444", borderColor: "rgba(255,107,107,0.3)" }}>🗑 Tokenni o'chirish</button>}
+              </div>
+            </Section>
+
+            {/* ── USERS ── */}
+            <Section title="Adminlar">
+              {userMsg && <FlashMsg msg={userMsg} />}
+              {users.length === 0 && <div style={{ color: "var(--text-muted)" }}>Foydalanuvchi yo'q.</div>}
+              {users.map(u => (
+                <div key={u.id} style={{ borderTop: "1px solid var(--border-glass)", padding: "0.7rem 0" }}>
+                  {editUserId === u.id ? (
+                    <div>
+                      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "0.6rem" }}>
+                        <Field label="Telefon"><input style={inputStyle} value={userForm.phone} onChange={e => setUserForm({ ...userForm, phone: e.target.value })} /></Field>
+                        <Field label="Yangi parol (ixt.)"><input style={inputStyle} value={userForm.password} onChange={e => setUserForm({ ...userForm, password: e.target.value })} placeholder="bo'sh qoldirsangiz tegmaydi" /></Field>
+                        <Field label="Ism"><input style={inputStyle} value={userForm.firstName} onChange={e => setUserForm({ ...userForm, firstName: e.target.value })} /></Field>
+                        <Field label="Familiya"><input style={inputStyle} value={userForm.lastName} onChange={e => setUserForm({ ...userForm, lastName: e.target.value })} /></Field>
+                      </div>
+                      <div style={{ marginTop: "0.6rem", display: "flex", gap: "0.5rem" }}>
+                        <button onClick={saveUser} disabled={savingUser} className="btn-primary" style={{ padding: "0.5rem 1rem", fontSize: "0.9rem" }}>
+                          {savingUser ? "..." : "Saqlash"}
+                        </button>
+                        <button onClick={() => setEditUserId(null)} style={{ ...btnGhost, padding: "0.5rem 1rem", fontSize: "0.9rem" }}>Bekor</button>
+                      </div>
+                    </div>
+                  ) : (
+                    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                      <div>
+                        <div><strong>{u.first_name} {u.last_name || ""}</strong> <span style={{ color: "var(--text-muted)", fontSize: "0.82rem" }}>· {u.role}</span></div>
+                        <div style={{ color: "var(--text-muted)", fontFamily: "monospace", fontSize: "0.85rem" }}>{u.phone}</div>
+                      </div>
+                      <button onClick={() => startEditUser(u)} style={{ ...btnGhost, padding: "0.4rem 0.9rem", fontSize: "0.85rem" }}>✎ Tahrir</button>
+                    </div>
+                  )}
+                </div>
+              ))}
+            </Section>
+          </>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function Section({ title, children }: { title: string; children: React.ReactNode }) {
+  return (
+    <div style={{ marginBottom: "1.5rem", paddingBottom: "1.2rem", borderBottom: "1px solid var(--border-glass)" }}>
+      <h3 style={{ fontSize: "0.85rem", textTransform: "uppercase", letterSpacing: 1.5, color: "var(--text-muted)", marginBottom: "0.8rem", fontWeight: 600 }}>{title}</h3>
+      {children}
+    </div>
+  );
+}
+
+function Field({ label, full, children }: { label: string; full?: boolean; children: React.ReactNode }) {
+  return (
+    <div style={{ gridColumn: full ? "1 / -1" : undefined }}>
+      <label style={labelStyle}>{label}</label>
+      {children}
+    </div>
+  );
+}
+
+function FlashMsg({ msg }: { msg: { type: "ok" | "err"; text: string } }) {
+  const ok = msg.type === "ok";
+  return (
+    <div style={{
+      background: ok ? "rgba(0,200,100,0.1)" : "rgba(255,107,107,0.1)",
+      color: ok ? "#22c55e" : "#ff6b6b",
+      padding: "0.6rem 0.9rem", borderRadius: 8, fontSize: "0.9rem", marginBottom: "0.7rem",
+    }}>{msg.text}</div>
   );
 }
 
