@@ -120,8 +120,11 @@ async function getPlans(gymId) {
 
 async function mainMenuKeyboard(gymId, telegramId) {
   const s = await t(gymId, telegramId);
+  // Entry-code and QR-pass buttons are intentionally hidden from the keyboard
+  // — the partner gym's bot (the design we're matching) only exposes the 6
+  // primary actions. The hearsAll handlers stay registered so deep links
+  // and language-switched text still work for anyone who has them.
   return Markup.keyboard([
-    [s.menuCode, s.menuQr],
     [s.menuAccount, s.menuHistory],
     [s.menuBuy, s.menuContact],
     [s.menuRefresh, s.menuLang],
